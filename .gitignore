@@ -1,0 +1,69 @@
+# Environments & Secrets
+.env
+.env.local
+.env.*.local
+*.token
+*.key
+*.pem
+*.secret
+
+# Runtime Authentication & Session State
+auth.json
+conversations.json
+sync_buf.txt
+.wechat-*
+session/
+tokens/
+
+# Runtime Data & Caches (Protect personal messages & To Do items)
+data/*.json
+!data/*.example
+!data/.gitkeep
+synced_todos.json
+group_history.json
+*.db
+*.sqlite3
+
+# Logs & Audit Dumps
+*.log
+logs/
+intrusion_audit.log
+
+# Media & Temporary Files
+media/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.mp4
+*.m4a
+*.wav
+*.bin
+*.tar.gz
+*.zip
+*.tar
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+.pytest_cache/
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

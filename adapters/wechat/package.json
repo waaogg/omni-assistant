@@ -1,0 +1,13 @@
+{
+  "name": "omni-wechat-adapter",
+  "version": "1.0.0",
+  "description": "WeChat Adapter for Omni-Assistant using Tencent Official iLink Protocol",
+  "main": "wechat_bot.js",
+  "scripts": {
+    "start": "node wechat_bot.js"
+  },
+  "dependencies": {
+    "qrcode-terminal": "^0.12.0"
+  },
+  "type": "commonjs"
+}

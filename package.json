@@ -1,0 +1,25 @@
+{
+  "name": "omni-assistant",
+  "version": "1.0.0",
+  "description": "Omni-Channel Personal AI Assistant (QQ & WeChat)",
+  "main": "adapters/wechat/wechat_bot.js",
+  "scripts": {
+    "start": "python3 main.py",
+    "start:wechat": "node adapters/wechat/wechat_bot.js",
+    "test": "pytest tests"
+  },
+  "dependencies": {
+    "qrcode-terminal": "^0.12.0"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "qq-bot",
+    "wechat-bot",
+    "deepseek",
+    "antigravity",
+    "microsoft-todo"
+  ],
+  "author": "",
+  "license": "MIT"
+}

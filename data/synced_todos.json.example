@@ -1,0 +1,16 @@
+{
+  "tasks": [
+    {
+      "id": "sample-task-id-001",
+      "title": "📌 示例待办任务",
+      "who": "张三",
+      "what": "项目阶段进度例会",
+      "start_time": "2026-09-20 14:00:00",
+      "end_time": "2026-09-20 15:30:00",
+      "context": "线上会议室 123-456-789",
+      "due_iso": "2026-09-20T14:00:00",
+      "reminder_iso": "2026-09-20T13:45:00",
+      "signature": "samplehash0123456789abcdef"
+    }
+  ]
+}
