@@ -240,6 +240,21 @@ The tests cover provider requests, CLI tool loops, nested CLI JSONL output,
 configuration validation, channel toggles, desensitization, Git isolation,
 atomic JSON storage, and time parsing.
 
+## Dashboard
+
+Run the local setup and operations panel:
+
+```bash
+python dashboard.py
+```
+
+Open `http://127.0.0.1:8765`. The panel can edit the common provider/channel
+settings, start/restart/stop the assistant, and stream recent supervisor
+output. Configuration is saved to `.env` atomically and requires a restart to
+take effect. It binds to localhost by default and masks API keys/tokens; set
+`DASHBOARD_HOST`, `DASHBOARD_PORT`, and optionally `DASHBOARD_TOKEN` in the
+environment before exposing it through a reverse proxy.
+
 ## Deployment
 
 ### Docker Compose

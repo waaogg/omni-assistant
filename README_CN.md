@@ -167,3 +167,17 @@ python3 main.py
 
 ## 📄 开源许可证
 本项目基于 [MIT License](LICENSE) 协议开源。
+## 图形化设置与运行面板
+
+启动本地 Dashboard：
+
+```bash
+python dashboard.py
+```
+
+然后访问 `http://127.0.0.1:8765`。面板支持初始配置常用的 AI/QQ/微信/To Do
+选项、启动/重启/停止助手进程，并查看最近的监督进程输出。配置会原子写入
+`.env`，保存后需要重启服务才会生效；API Key 和 Token 只显示掩码。
+
+面板默认只监听本机。如需通过反向代理访问，请在环境中设置
+`DASHBOARD_HOST`、`DASHBOARD_PORT`，并配置 `DASHBOARD_TOKEN` 后再暴露到网络。
