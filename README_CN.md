@@ -10,7 +10,7 @@
 </p>
 
 > **Omni-Assistant** 是一款专为个人打造的开源全渠道智能中控管家。  
-> 深度融合 **QQ（NapCat OneBot v11）** 与 **微信（腾讯官方 iLink 机器人协议）** 双渠道，底层支持 **DeepSeek 等主流大模型（标准 OpenAI 兼容接口）** 与 **Google Antigravity CLI (`agy`)** 混合驱动，联动 **Microsoft To Do** 实现日程提取、语义防重、起止时间完整性管理与原生系统强提醒。
+> 深度融合 **QQ（NapCat OneBot v11）** 与 **微信（腾讯官方 iLink 机器人协议）** 双渠道，底层通过任意 **OpenAI 兼容接口**（DeepSeek、OpenAI、Ollama、vLLM 或兼容网关）驱动，联动 **Microsoft To Do** 实现日程提取、语义防重、起止时间完整性管理与原生系统强提醒。
 
 ---
 
@@ -21,10 +21,11 @@
 - **无感静默**：未配置或设为 `false` 的通道不会加载模块、不发起网络连接、不报错、不要求任何前置依赖。
 - **灵活组合**：支持“仅 QQ”、“仅微信”或“QQ + 微信双通道并发运行”。
 
-### 2. 🧠 多 AI 后端中控调度（默认 DeepSeek）
+### 2. 🧠 可插拔 AI 中控调度（默认 DeepSeek）
 - **开箱即用**：默认预设接入 **DeepSeek 官方 API (`https://api.deepseek.com/v1`)** 与 `deepseek-chat` 模型，仅需填入 API Key 即可启动。
 - **标准兼容**：全面兼容任何符合 OpenAI API 规范的端点（如 OpenAI、Moonshot、通义千问、SiliconFlow、本地 Ollama/vLLM 等）。
-- **Antigravity CLI 支持**：无缝支持切换至 Google Antigravity CLI 本地智能体进程模式 (`AI_PROVIDER=agy`)。
+- **可选本地 CLI**：支持 `AI_PROVIDER=agy|codex|opencode|claude`。设置 `AUTO_INSTALL_CLI=true` 后，启动时会自动安装已核实的 npm CLI；`agy` 因发行包依环境而异，需显式提供 `AGY_INSTALL_COMMAND`。
+- **工具兼容**：QQ 保留原生 OpenAI 工具调用；本地 CLI 使用统一 JSON 工具协议（`tool_call` / `final`），执行同一套本地工具。
 
 ### 3. 📅 微软待办原生嵌入与提前 15 分钟闹钟 (Microsoft To Do)
 - **语义级防重与动态修正**：捕捉群通知时携带现有未完成待办，由大模型裁决是闲聊 (`ignore`)、重复 (`duplicate`)、修正现有事项 (`update`) 还是全新待办 (`new`)。
@@ -66,7 +67,6 @@ flowchart TD
     subgraph Brain ["统一大脑调度层 (Core AI Provider)"]
         DS["DeepSeek 官方 API (默认)"]
         OAI["标准 OpenAI 兼容接口"]
-        AGY["Google Antigravity CLI (agy)"]
     end
 
     subgraph Integration ["生态闭环联动"]
@@ -83,7 +83,6 @@ flowchart TD
     WA --> Brain
     Brain --> DS
     Brain --> OAI
-    Brain --> AGY
     Brain --> Integration
 ```
 
@@ -101,6 +100,8 @@ cd omni-assistant
 - **Python 环境** (Python 3.10+):
   ```bash
   pip install -r requirements.txt
+  # 运行测试时再安装
+  pip install -r requirements-dev.txt
   ```
 - **Node.js 环境** (Node.js 18+，若启用微信或 To Do 模块):
   ```bash
@@ -119,8 +120,9 @@ cp .env.example .env
 ENABLE_QQ=true
 ENABLE_WECHAT=true
 
-# 2. 配置 AI 大模型 (默认已填好 DeepSeek Base URL，只需填 Key)
+# 2. 配置 AI 大模型或本地 CLI
 AI_PROVIDER=openai
+AUTO_INSTALL_CLI=false
 LLM_BASE_URL=https://api.deepseek.com/v1
 LLM_API_KEY=sk-your-deepseek-api-key
 LLM_MODEL=deepseek-chat
@@ -139,6 +141,10 @@ NAPCAT_HTTP_URL=http://127.0.0.1:3000
 python3 main.py --check-only
 ```
 
+配置自检发现非法通道、URL、数字或 AI 驱动配置时会以退出码 `2` 失败，便于
+容器和 systemd 快速阻断错误部署。待办、群历史和微信会话状态均采用原子替换
+写入，进程中断时不会留下半截 JSON 文件。
+
 ### 5. 启动服务
 ```bash
 python3 main.py
@@ -154,6 +160,7 @@ python3 main.py
    ```bash
    python3 tests/test_desensitization.py
    python3 tests/test_git_isolation.py
+   python3 -m pytest -q
    ```
 
 ---
