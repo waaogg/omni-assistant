@@ -12,12 +12,17 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 def run_main_check(env_overrides: dict):
     env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env.setdefault("ADMIN_QQ", "10000001")
+    env.setdefault("TARGET_GROUP_IDS", "90000001")
     env.update(env_overrides)
     res = subprocess.run(
         [sys.executable, str(PROJECT_ROOT / "main.py"), "--check-only"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         cwd=str(PROJECT_ROOT),
         env=env
     )

@@ -1,11 +1,9 @@
 /**
  * Unified AI Provider for Omni-Assistant (Node.js)
  * Supports:
- * 1. OpenAI-compatible API (Default: DeepSeek, OpenAI, etc.)
- * 2. Google Antigravity CLI (agy) subprocess
+ * OpenAI-compatible API or optional local agent CLIs.
  */
-const { spawn } = require('node:child_process');
-
+const { spawn, execFileSync } = require('node:child_process');
 function getEnv(key, fallback = '') {
   return process.env[key] !== undefined ? process.env[key] : fallback;
 }
@@ -15,9 +13,102 @@ const LLM_BASE_URL = getEnv('LLM_BASE_URL', 'https://api.deepseek.com/v1').repla
 const LLM_API_KEY = getEnv('LLM_API_KEY', '').trim();
 const LLM_MODEL = getEnv('LLM_MODEL', 'deepseek-chat').trim();
 const LLM_TEMPERATURE = parseFloat(getEnv('LLM_TEMPERATURE', '0.1')) || 0.1;
+const AUTO_INSTALL_CLI = ['true', '1', 'yes', 'on'].includes(getEnv('AUTO_INSTALL_CLI', 'false').toLowerCase());
+const CLI_SPECS = {
+  agy: { executable: getEnv('AGY_BIN_PATH', 'agy'), package: null, args: (p) => ['-p', p, '--output-format', 'json'] },
+  codex: { executable: getEnv('CODEX_BIN_PATH', 'codex'), package: '@openai/codex', args: (p) => ['exec', '--json', p] },
+  opencode: { executable: getEnv('OPENCODE_BIN_PATH', 'opencode'), package: 'opencode-ai', args: (p) => ['run', '--format', 'json', p] },
+  claude: { executable: getEnv('CLAUDE_BIN_PATH', 'claude'), package: '@anthropic-ai/claude-code', args: (p) => ['-p', p, '--output-format', 'json'] },
+};
 
-const AGY_BIN_PATH = getEnv('AGY_BIN_PATH', 'agy').trim();
-const AGY_MODEL = getEnv('AGY_MODEL', 'gemini-3.8-flash-low').trim();
+function cliArgs(provider, prompt) {
+  const custom = getEnv(`${provider.toUpperCase()}_ARGS`, '').trim();
+  if (custom) {
+    return custom.replaceAll('{prompt}', prompt).match(/"[^"]*"|'[^']*'|\S+/g)
+      .map((part) => part.replace(/^["']|["']$/g, ''));
+  }
+  return CLI_SPECS[provider].args(prompt);
+}
+
+function ensureCli(provider) {
+  const spec = CLI_SPECS[provider];
+  if (!spec) throw new Error(`Unsupported AI provider: ${provider}`);
+  try {
+    execFileSync(process.platform === 'win32' ? 'where.exe' : 'which', [spec.executable], { stdio: 'ignore' });
+    return spec;
+  } catch {}
+  if (!AUTO_INSTALL_CLI) throw new Error(`${provider} CLI not found; set AUTO_INSTALL_CLI=true to install it`);
+  if (!spec.package) {
+    const installCommand = getEnv(`${provider.toUpperCase()}_INSTALL_COMMAND`, '').trim();
+    if (!installCommand) throw new Error(`${provider} CLI is missing; configure ${provider.toUpperCase()}_INSTALL_COMMAND`);
+    execFileSync(installCommand, { shell: true, stdio: 'inherit' });
+  } else {
+    execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['install', '--global', spec.package], { stdio: 'inherit' });
+  }
+  try {
+    execFileSync(process.platform === 'win32' ? 'where.exe' : 'which', [spec.executable], { stdio: 'ignore' });
+  } catch {
+    throw new Error(`${provider} CLI installation completed but '${spec.executable}' is still unavailable`);
+  }
+  return spec;
+}
+
+function parseCliOutput(text) {
+  const findText = (value) => {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (Array.isArray(value)) {
+      for (const child of [...value].reverse()) {
+        const found = findText(child);
+        if (found) return found;
+      }
+    }
+    if (value && typeof value === 'object') {
+      for (const key of ['response', 'output', 'text', 'message', 'content']) {
+        const found = findText(value[key]);
+        if (found) return found;
+      }
+      for (const child of Object.values(value)) {
+        if (typeof child === 'string' && ['item.completed', 'tool_call', 'final'].includes(child)) continue;
+        const found = findText(child);
+        if (found) return found;
+      }
+    }
+    return '';
+  };
+
+  for (const line of text.split(/\r?\n/).reverse()) {
+    try {
+      const value = JSON.parse(line.trim());
+      const found = findText(value);
+      if (found) return found;
+    } catch {}
+  }
+  return text.trim();
+}
+
+function callCli(promptText, timeoutMs = 300000) {
+  return new Promise((resolve, reject) => {
+    let spec;
+    try { spec = ensureCli(AI_PROVIDER); } catch (err) { reject(err); return; }
+    const child = spawn(spec.executable, cliArgs(AI_PROVIDER, promptText), {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: process.platform === 'win32',
+    });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => { child.kill('SIGTERM'); reject(new Error(`${AI_PROVIDER} CLI timed out`)); }, timeoutMs);
+    child.stdout.on('data', (data) => { stdout += data.toString(); });
+    child.stderr.on('data', (data) => { stderr += data.toString(); });
+    child.on('error', (err) => { clearTimeout(timer); reject(err); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) return reject(new Error(`${AI_PROVIDER} CLI failed (${code}): ${stderr.trim() || stdout.trim()}`));
+      const response = parseCliOutput(stdout);
+      if (!response) return reject(new Error(`${AI_PROVIDER} CLI returned an empty response`));
+      resolve({ response, conversationId: null });
+    });
+  });
+}
 
 /**
  * Call OpenAI-compatible Chat Completions API
@@ -72,75 +163,13 @@ async function callOpenAICompatible(messages, timeoutMs = 60000) {
 }
 
 /**
- * Call Antigravity CLI (agy)
- */
-async function callAntigravityCLI(promptText, conversationId, timeoutMs = 300000) {
-  return new Promise((resolve, reject) => {
-    const args = [
-      '-p', promptText,
-      '--model', AGY_MODEL,
-      '--output-format', 'json',
-      '--dangerously-skip-permissions'
-    ];
-    if (conversationId) {
-      args.push('--conversation', conversationId);
-    }
-
-    const child = spawn(AGY_BIN_PATH, args, {
-      cwd: process.env.AGY_CWD || process.cwd(),
-      env: { ...process.env },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    let stdout = '';
-    let stderr = '';
-
-    const timer = setTimeout(() => {
-      child.kill('SIGTERM');
-      reject(new Error(`Antigravity CLI 执行超时 (${Math.round(timeoutMs / 1000)}秒)`));
-    }, timeoutMs);
-
-    child.stdout.on('data', (d) => { stdout += d.toString(); });
-    child.stderr.on('data', (d) => { stderr += d.toString(); });
-
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      if (code !== 0 && !stdout.trim()) {
-        return reject(new Error(stderr || `agy exited with code ${code}`));
-      }
-      try {
-        const jsonMatch = stdout.trim().match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          const parsed = JSON.parse(jsonMatch[0]);
-          return resolve({
-            response: (parsed.response || stdout).trim(),
-            conversationId: parsed.conversation_id || conversationId,
-          });
-        }
-      } catch {}
-      resolve({
-        response: stdout.trim() || '（已执行完成）',
-        conversationId,
-      });
-    });
-
-    child.on('error', (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-  });
-}
-
-/**
  * Unified executeAI function
  * Returns: { response: string, conversationId?: string }
  */
 async function executeAI(promptText, conversationId = null, systemPrompt = null) {
-  if (AI_PROVIDER === 'agy') {
-    return await callAntigravityCLI(promptText, conversationId);
+  if (!['openai', 'deepseek', 'default'].includes(AI_PROVIDER)) {
+    return await callCli(promptText);
   }
-
-  // Default: OpenAI compatible (DeepSeek, etc.)
   const messages = [];
   if (systemPrompt) {
     messages.push({ role: 'system', content: systemPrompt });
@@ -157,7 +186,7 @@ async function executeAI(promptText, conversationId = null, systemPrompt = null)
 module.exports = {
   executeAI,
   callOpenAICompatible,
-  callAntigravityCLI,
+  callCli,
   AI_PROVIDER,
   LLM_MODEL,
   LLM_BASE_URL,

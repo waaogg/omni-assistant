@@ -12,7 +12,7 @@
 [简体中文文档 (Chinese Documentation)](README_CN.md)
 
 > **Omni-Assistant** is an open-source, multi-channel personal AI assistant hub.  
-> It integrates **QQ (NapCat OneBot v11)** and **WeChat (Tencent Official iLink Bot Protocol)** under a unified architecture, powered by **DeepSeek / OpenAI-compatible APIs** or **Google Antigravity CLI (`agy`)**, seamlessly synchronizing schedules with **Microsoft To Do**.
+> It integrates **QQ (NapCat OneBot v11)** and **WeChat (Tencent Official iLink Bot Protocol)** under a unified architecture, powered by any **OpenAI-compatible API** (DeepSeek, OpenAI, Ollama, vLLM, or compatible gateways), seamlessly synchronizing schedules with **Microsoft To Do**.
 
 ---
 
@@ -23,10 +23,11 @@
 - **Zero Overhead**: Disabled channels do not initialize, make network requests, or demand prerequisite credentials.
 - **Flexible Modes**: Run QQ-only, WeChat-only, or both channels simultaneously.
 
-### 2. 🧠 Multi-Provider AI Engine (Default: DeepSeek)
+### 2. 🧠 Pluggable AI Engine (Default: DeepSeek)
 - **Out-of-the-Box**: Pre-configured with **DeepSeek Official API (`https://api.deepseek.com/v1`)** and `deepseek-chat`.
 - **Standard Compatibility**: Compatible with any standard OpenAI chat completions endpoint (OpenAI, Moonshot, Qwen, SiliconFlow, Ollama, vLLM).
-- **Google Antigravity CLI**: Native support for running local Antigravity agent subprocesses (`AI_PROVIDER=agy`).
+- **Optional local CLIs**: `AI_PROVIDER=agy|codex|opencode|claude` is supported. Set `AUTO_INSTALL_CLI=true` to install the verified npm CLIs on startup; `agy` uses the explicit `AGY_INSTALL_COMMAND` because its distribution package is environment-specific.
+- **Tool compatibility**: QQ keeps native OpenAI tool-calling; local CLIs use a JSON tool protocol (`tool_call` / `final`) and execute the same local tools.
 
 ### 3. 📅 Microsoft To Do Native Integration
 - **Semantic Deduplication**: Dynamically evaluates incoming group/private notices against existing tasks to identify whether an item is noise, duplicate, modification, or a new task.
@@ -67,7 +68,6 @@ flowchart TD
     subgraph Core_AI ["Universal AI Engine"]
         DS["DeepSeek API (Default)"]
         OAI["Standard OpenAI Endpoints"]
-        AGY["Google Antigravity CLI"]
     end
 
     subgraph Productivity ["Productivity Integration"]
@@ -84,7 +84,6 @@ flowchart TD
     WA --> Core_AI
     Core_AI --> DS
     Core_AI --> OAI
-    Core_AI --> AGY
     Core_AI --> Productivity
 ```
 
@@ -103,6 +102,9 @@ cd omni-assistant
 # Python dependencies
 pip install -r requirements.txt
 
+# Test-only dependencies (optional)
+pip install -r requirements-dev.txt
+
 # Node.js dependencies (for WeChat or To Do)
 npm install
 ```
@@ -117,8 +119,9 @@ Edit `.env` to enable the channels and models of your choice:
 ENABLE_QQ=true
 ENABLE_WECHAT=true
 
-# AI Provider (DeepSeek is default)
+# AI provider: openai, agy, codex, opencode, or claude
 AI_PROVIDER=openai
+AUTO_INSTALL_CLI=false
 LLM_BASE_URL=https://api.deepseek.com/v1
 LLM_API_KEY=sk-your-deepseek-api-key
 LLM_MODEL=deepseek-chat
@@ -133,6 +136,10 @@ python3 main.py --check-only
 python3 main.py
 ```
 
+`--check-only` returns exit code `2` for invalid channel, URL, numeric, or provider
+configuration so deployment probes can fail fast. Runtime JSON state is replaced
+atomically to avoid leaving partial task/history files after an interruption.
+
 ---
 
 ## 🛡️ Security & Desensitization
@@ -144,6 +151,7 @@ This project strictly adheres to a zero-leakage security boundary:
   ```bash
   python3 tests/test_desensitization.py
   python3 tests/test_git_isolation.py
+  python3 -m pytest -q
   ```
 
 ---

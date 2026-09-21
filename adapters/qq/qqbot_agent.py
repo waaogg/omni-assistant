@@ -29,6 +29,7 @@ from core.todo_manager import (
     load_memory
 )
 from core.cleaner import clean_qq_markdown, strip_tool_leak
+from core.storage import load_json, save_json
 
 logger = logging.getLogger("QQAdapter")
 
@@ -36,34 +37,24 @@ last_seen_message_ids: Dict[int, int] = {}
 ADMIN_CHAT_HISTORY: List[Dict[str, str]] = []
 
 def save_group_message(record: dict):
-    records = []
     hist_file = config.HISTORY_FILE
-    if hist_file.exists():
-        try:
-            with open(hist_file, "r", encoding="utf-8") as f:
-                records = json.load(f)
-        except Exception:
-            records = []
+    records = load_json(hist_file, [])
+    if not isinstance(records, list):
+        records = []
     records.append(record)
     if len(records) > 300:
         records = records[-300:]
     try:
-        hist_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(hist_file, "w", encoding="utf-8") as f:
-            json.dump(records, f, ensure_ascii=False, indent=2)
+        save_json(hist_file, records)
     except Exception as e:
         logger.error(f"保存群消息历史失败: {e}")
 
 def load_local_group_messages(limit: int = 80) -> list:
     hist_file = config.HISTORY_FILE
-    if hist_file.exists():
-        try:
-            with open(hist_file, "r", encoding="utf-8") as f:
-                records = json.load(f)
-                return [f"{r.get('sender')}: {r.get('text')}" for r in records[-limit:]]
-        except Exception:
-            pass
-    return []
+    records = load_json(hist_file, [])
+    if not isinstance(records, list):
+        return []
+    return [f"{r.get('sender')}: {r.get('text')}" for r in records[-limit:]]
 
 def call_napcat_api(action: str, params: dict) -> dict:
     url = f"{config.NAPCAT_HTTP_URL}/{action}"
@@ -257,7 +248,7 @@ def run_admin_agent(user_text: str) -> str:
         messages.append(turn)
     messages.append({"role": "user", "content": user_text})
 
-    if config.AI_PROVIDER == "openai":
+    if config.AI_PROVIDER in ("openai", "deepseek", "default"):
         # Standard OpenAI format with function calling
         for _ in range(3):
             base_url = config.LLM_BASE_URL.rstrip("/")
@@ -307,13 +298,16 @@ def run_admin_agent(user_text: str) -> str:
                     "content": tool_output
                 })
         return "已为您执行了相关操作，请告诉我是否还需要进一步调整。"
-    else:
-        # AGY or fallback text mode
-        reply = ai_provider.call_ai(user_text, system_prompt=system_prompt)
-        cleaned = clean_qq_markdown(strip_tool_leak(reply))
-        ADMIN_CHAT_HISTORY.append({"role": "user", "content": user_text})
-        ADMIN_CHAT_HISTORY.append({"role": "assistant", "content": cleaned})
-        return cleaned
+
+    try:
+        reply = ai_provider.call_agent(messages, AGENT_TOOLS, execute_agent_tool)
+    except Exception as exc:
+        logger.error(f"CLI 智能体交互异常: {exc}")
+        return "处理时遇到了一点波动，请确认 CLI 已安装并完成登录后再试。"
+    cleaned = clean_qq_markdown(strip_tool_leak(reply))
+    ADMIN_CHAT_HISTORY.append({"role": "user", "content": user_text})
+    ADMIN_CHAT_HISTORY.append({"role": "assistant", "content": cleaned})
+    return cleaned
 
 def generate_natural_notice_report(action_type: str, item_info: dict, raw_group_msg: str) -> str:
     action_desc = "【更新/修正了已有待办】" if action_type == "updated" else "【新增了待办事项】"

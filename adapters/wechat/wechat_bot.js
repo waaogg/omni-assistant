@@ -2,7 +2,7 @@
 /**
  * WeChat Adapter for Omni-Assistant
  * Directly connects to Tencent's official iLink Bot protocol (ilinkai.weixin.qq.com)
- * Uses core/ai_provider.js for multi-model AI reasoning (DeepSeek, OpenAI, agy CLI)
+ * Uses core/ai_provider.js for OpenAI-compatible AI reasoning
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -69,6 +69,12 @@ if (!fs.existsSync(MEDIA_DIR)) {
   fs.mkdirSync(MEDIA_DIR, { recursive: true });
 }
 
+function atomicWriteFile(filePath, content) {
+  const tempPath = `${filePath}.${process.pid}.tmp`;
+  fs.writeFileSync(tempPath, content, 'utf8');
+  fs.renameSync(tempPath, filePath);
+}
+
 function loadAuth() {
   if (fs.existsSync(AUTH_FILE)) {
     try {
@@ -81,7 +87,7 @@ function loadAuth() {
 }
 
 function saveAuth(data) {
-  fs.writeFileSync(AUTH_FILE, JSON.stringify(data, null, 2), 'utf8');
+  atomicWriteFile(AUTH_FILE, JSON.stringify(data, null, 2));
 }
 
 function loadConversations() {
@@ -96,7 +102,7 @@ function loadConversations() {
 }
 
 function saveConversations(data) {
-  fs.writeFileSync(CONV_FILE, JSON.stringify(data, null, 2), 'utf8');
+  atomicWriteFile(CONV_FILE, JSON.stringify(data, null, 2));
 }
 
 function loadSyncBuf() {
@@ -111,7 +117,7 @@ function loadSyncBuf() {
 }
 
 function saveSyncBuf(buf) {
-  fs.writeFileSync(SYNC_FILE, buf || '', 'utf8');
+  atomicWriteFile(SYNC_FILE, buf || '');
 }
 
 function randomWechatUin() {
@@ -491,7 +497,7 @@ async function sendWechatMessage(auth, toUserId, contextToken, text) {
         },
       ],
     },
-    base_info: { channel_version: '2.4.8', bot_agent: 'AntigravityClawBot/1.0' },
+    base_info: { channel_version: '2.4.8', bot_agent: 'OmniAssistant/1.0' },
   };
 
   return await apiPost(auth.baseUrl, 'ilink/bot/sendmessage', body, auth.botToken, 15000);
@@ -503,7 +509,7 @@ async function sendTypingStatus(auth, toUserId, typingTicket) {
     await apiPost(auth.baseUrl, 'ilink/bot/sendtyping', {
       ilink_user_id: toUserId,
       typing_ticket: typingTicket,
-      base_info: { channel_version: '2.4.8', bot_agent: 'AntigravityClawBot/1.0' },
+      base_info: { channel_version: '2.4.8', bot_agent: 'OmniAssistant/1.0' },
     }, auth.botToken, 5000);
   } catch {}
 }
@@ -536,7 +542,7 @@ async function runDaemon() {
 
   try {
     await apiPost(auth.baseUrl, 'ilink/bot/msg/notifystart', {
-      base_info: { channel_version: '2.4.8', bot_agent: 'AntigravityClawBot/1.0' }
+      base_info: { channel_version: '2.4.8', bot_agent: 'OmniAssistant/1.0' }
     }, auth.botToken, 5000);
     log('📡 已向腾讯网关发送 notifystart 就绪心跳');
   } catch (e) {
@@ -552,7 +558,7 @@ async function runDaemon() {
         get_updates_buf: syncBuf,
         base_info: {
           channel_version: '2.4.8',
-          bot_agent: 'AntigravityClawBot/1.0',
+          bot_agent: 'OmniAssistant/1.0',
         },
       }, auth.botToken, 40000);
 
@@ -718,7 +724,7 @@ async function runDaemon() {
           const cfg = await apiPost(auth.baseUrl, 'ilink/bot/getconfig', {
             ilink_user_id: fromUser,
             context_token: latestContextToken,
-            base_info: { channel_version: '2.4.8', bot_agent: 'AntigravityClawBot/1.0' },
+            base_info: { channel_version: '2.4.8', bot_agent: 'OmniAssistant/1.0' },
           }, auth.botToken, 5000);
 
           if (cfg.typing_ticket) {
