@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Omni-Assistant Dashboard</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b1220; --panel:#121c2f; --muted:#8fa2bf; --text:#e8eef8; --accent:#63b3ed; --ok:#68d391; --danger:#fc8181; }
+    * { box-sizing:border-box } body { margin:0; font:15px system-ui,sans-serif; color:var(--text); background:linear-gradient(135deg,#0b1220,#111827); }
+    header { padding:28px max(22px,calc((100% - 1160px)/2)); border-bottom:1px solid #22314d; display:flex; justify-content:space-between; align-items:center; gap:16px; }
+    h1,h2 { margin:0 0 8px } h1 { font-size:26px } h2 { font-size:18px } p { color:var(--muted); margin:5px 0 }
+    main { max-width:1160px; margin:24px auto; padding:0 22px; display:grid; gap:18px; grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .wide { grid-column:1/-1 } .card { background:rgba(18,28,47,.9); border:1px solid #263755; border-radius:14px; padding:20px; box-shadow:0 12px 32px #0002; }
+    .status { display:flex; align-items:center; gap:10px; font-weight:650 } .dot { width:11px;height:11px;border-radius:50%;background:var(--danger) } .dot.on { background:var(--ok) }
+    .actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:16px } button { border:0;border-radius:8px;padding:10px 14px;background:#2b6cb0;color:white;font-weight:650;cursor:pointer } button.secondary { background:#2d3748 } button.danger { background:#9b2c2c }
+    form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px 16px } label { display:grid; gap:6px; color:var(--muted); font-size:13px } input,select { width:100%; padding:10px; border:1px solid #344766; border-radius:7px; background:#0c1526;color:var(--text) } .full { grid-column:1/-1 }
+    pre { min-height:150px; max-height:300px; overflow:auto; background:#09101d; padding:14px; border-radius:8px; color:#b9c8df; white-space:pre-wrap } .notice { color:#fbd38d; min-height:20px } footer { max-width:1160px; padding:0 22px 30px; margin:auto; color:var(--muted); font-size:12px }
+    @media (max-width:760px) { main,form { grid-template-columns:1fr } .wide,.full { grid-column:auto } header { align-items:flex-start; flex-direction:column } }
+  </style>
+</head>
+<body>
+  <header><div><h1>Omni-Assistant</h1><p>Setup, operations, and health dashboard</p></div><div id="status" class="status"><span class="dot"></span><span>Checking service...</span></div></header>
+  <main>
+    <section class="card"><h2>Service</h2><p>Start or stop the assistant process. Configuration changes apply after restart.</p><div class="actions"><button onclick="service('start')">Start</button><button class="secondary" onclick="service('restart')">Restart</button><button class="danger" onclick="service('stop')">Stop</button></div><div id="notice" class="notice"></div></section>
+    <section class="card"><h2>Runtime output</h2><p>Recent supervisor output (secrets are not intentionally printed).</p><pre id="logs">Loading...</pre></section>
+    <section class="card wide"><h2>Initial configuration</h2><p>Only keys from the project configuration contract can be written. Masked secrets are preserved when unchanged.</p>
+      <form id="config">
+        <label>AI provider<select name="AI_PROVIDER"><option>openai</option><option>deepseek</option><option>default</option><option>codex</option><option>opencode</option><option>claude</option><option>agy</option></select></label>
+        <label>Model<input name="LLM_MODEL" placeholder="deepseek-chat"></label>
+        <label class="full">Base URL<input name="LLM_BASE_URL" placeholder="https://api.deepseek.com/v1"></label>
+        <label>API key<input name="LLM_API_KEY" type="password" placeholder="Leave masked value unchanged"></label>
+        <label>Temperature<input name="LLM_TEMPERATURE" type="number" step="0.1" min="0" max="2"></label>
+        <label>Enable QQ<select name="ENABLE_QQ"><option value="false">false</option><option value="true">true</option></select></label>
+        <label>Enable WeChat<select name="ENABLE_WECHAT"><option value="false">false</option><option value="true">true</option></select></label>
+        <label>Enable Microsoft To Do<select name="ENABLE_MS_TODO"><option value="true">true</option><option value="false">false</option></select></label>
+        <label>Admin QQ<input name="ADMIN_QQ"></label>
+        <label>Target group IDs<input name="TARGET_GROUP_IDS" placeholder="123,456"></label>
+        <label class="full">NapCat HTTP URL<input name="NAPCAT_HTTP_URL"></label>
+        <label>NapCat WebSocket URL<input name="NAPCAT_WS_URL"></label>
+        <label>NapCat token<input name="NAPCAT_TOKEN" type="password"></label>
+        <label>Auto-install CLI<select name="AUTO_INSTALL_CLI"><option value="false">false</option><option value="true">true</option></select></label>
+        <div class="full actions"><button type="submit">Save configuration</button></div>
+      </form>
+    </section>
+  </main>
+  <footer>Local dashboard by default: http://127.0.0.1:8765. Put it behind authentication and a reverse proxy before exposing it remotely.</footer>
+  <script>
+    const fields = [...document.querySelectorAll('#config [name]')];
+    function setNotice(text, bad=false) { const el=document.querySelector('#notice'); el.textContent=text; el.style.color=bad?'var(--danger)':'#fbd38d'; }
+    async function api(path, options={}) { const r=await fetch(path,options); const d=await r.json(); if(!r.ok) throw Error(d.error||'Request failed'); return d; }
+    async function refresh() { try { const s=await api('/api/status'); const dot=document.querySelector('.dot'); dot.classList.toggle('on',s.running); document.querySelector('#status span:last-child').textContent=s.running?`Running (PID ${s.pid})`:'Stopped'; document.querySelector('#logs').textContent=s.logs.join('\n')||'No output yet'; } catch(e) { setNotice(e.message,true); } }
+    async function loadConfig() { const c=await api('/api/config'); fields.forEach(f=>{if(c[f.name]!==undefined) f.value=c[f.name]}); }
+    async function service(action) { try { await api('/api/service/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}); setNotice(action+' requested.'); refresh(); } catch(e) { setNotice(e.message,true); } }
+    document.querySelector('#config').addEventListener('submit', async e=>{e.preventDefault(); const body={}; fields.forEach(f=>body[f.name]=f.value); try { await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); setNotice('Saved. Restart the service to apply changes.'); } catch(e) { setNotice(e.message,true); }});
+    loadConfig().catch(e=>setNotice(e.message,true)); refresh(); setInterval(refresh,3000);
+  </script>
+</body>
+</html>
