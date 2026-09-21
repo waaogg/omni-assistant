@@ -9,14 +9,17 @@ def test_dashboard_masks_secrets_and_preserves_masked_values(tmp_path, monkeypat
     monkeypatch.setattr(dashboard, "ENV_FILE", env_file)
     monkeypatch.setattr(dashboard, "ALLOWED_KEYS", {"LLM_API_KEY", "LLM_MODEL"})
     monkeypatch.setattr(dashboard, "SENSITIVE_KEYS", {"LLM_API_KEY"})
+    monkeypatch.setenv("LLM_API_KEY", "injected-secret")
 
     public = dashboard.public_config()
-    assert public["LLM_API_KEY"] == "************"
+    assert public["LLM_API_KEY"]
+    assert set(public["LLM_API_KEY"]) == {"*"}
     assert public["LLM_MODEL"] == "old-model"
 
     dashboard.save_env({"LLM_API_KEY": "************", "LLM_MODEL": "new-model"})
     saved = env_file.read_text(encoding="utf-8")
     assert "LLM_API_KEY=secret-value" in saved
+    assert "injected-secret" not in saved
     assert "LLM_MODEL=new-model" in saved
 
 

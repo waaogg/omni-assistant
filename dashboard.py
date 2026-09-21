@@ -117,16 +117,17 @@ class Runtime:
 runtime = Runtime()
 
 
-def read_env() -> dict[str, str]:
+def read_env(include_process: bool = True) -> dict[str, str]:
     values: dict[str, str] = {}
     if ENV_FILE.exists():
         for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
             match = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$", line)
             if match:
                 values[match.group(1)] = match.group(2).strip().strip("\"'")
-    for key in ALLOWED_KEYS:
-        if key in os.environ:
-            values[key] = os.environ[key]
+    if include_process:
+        for key in ALLOWED_KEYS:
+            if key in os.environ:
+                values[key] = os.environ[key]
     return values
 
 
@@ -141,7 +142,9 @@ def public_config() -> dict[str, str]:
 
 
 def save_env(updates: dict[str, Any]) -> None:
-    current = read_env()
+    # Only merge the file when writing. Process-level variables may contain
+    # injected secrets and must never be persisted by a dashboard save.
+    current = read_env(include_process=False)
     for key, value in updates.items():
         if key not in ALLOWED_KEYS or not isinstance(value, (str, int, float, bool)):
             raise ValueError(f"Unsupported configuration key: {key}")
