@@ -1,13 +1,13 @@
 {
   "name": "omni-assistant",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Omni-Channel Personal AI Assistant (QQ & WeChat)",
   "main": "adapters/wechat/wechat_bot.js",
   "scripts": {
     "start": "python3 main.py",
     "start:dashboard": "python3 dashboard.py",
     "start:wechat": "node adapters/wechat/wechat_bot.js",
-    "test": "pytest tests"
+    "test": "python -m pytest -q"
   },
   "dependencies": {
     "qrcode-terminal": "^0.12.0"

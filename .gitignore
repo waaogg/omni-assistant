@@ -23,6 +23,10 @@ synced_todos.json
 group_history.json
 *.db
 *.sqlite3
+*.db-wal
+*.db-shm
+*.omnibak
+*.ndjson
 
 # Logs & Audit Dumps
 *.log

@@ -60,7 +60,7 @@ def ensure_cli(provider: str) -> str:
             )
         command = shlex.split(install_command, posix=os.name != "nt")
 
-    logger.info("Installing %s CLI: %s", provider, " ".join(command))
+    logger.info("Installing configured %s CLI", provider)
     result = subprocess.run(command, capture_output=True, text=True, timeout=300, check=False)
     if result.returncode != 0:
         raise RuntimeError(

@@ -13,6 +13,7 @@
     .wide { grid-column:1/-1 } .card { background:rgba(18,28,47,.9); border:1px solid #263755; border-radius:14px; padding:20px; box-shadow:0 12px 32px #0002; }
     .status { display:flex; align-items:center; gap:10px; font-weight:650 } .dot { width:11px;height:11px;border-radius:50%;background:var(--danger) } .dot.on { background:var(--ok) }
     .actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:16px } button { border:0;border-radius:8px;padding:10px 14px;background:#2b6cb0;color:white;font-weight:650;cursor:pointer } button.secondary { background:#2d3748 } button.danger { background:#9b2c2c }
+    .items { display:grid; gap:9px; margin-top:12px } .item { background:#09101d; border-radius:8px; padding:11px } .meta { color:var(--muted); font-size:12px }
     form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px 16px } label { display:grid; gap:6px; color:var(--muted); font-size:13px } input,select { width:100%; padding:10px; border:1px solid #344766; border-radius:7px; background:#0c1526;color:var(--text) } .full { grid-column:1/-1 }
     pre { min-height:150px; max-height:300px; overflow:auto; background:#09101d; padding:14px; border-radius:8px; color:#b9c8df; white-space:pre-wrap } .notice { color:#fbd38d; min-height:20px } footer { max-width:1160px; padding:0 22px 30px; margin:auto; color:var(--muted); font-size:12px }
     @media (max-width:760px) { main,form { grid-template-columns:1fr } .wide,.full { grid-column:auto } header { align-items:flex-start; flex-direction:column } }
@@ -23,6 +24,11 @@
   <main>
     <section class="card"><h2>Service</h2><p>Start or stop the assistant process. Configuration changes apply after restart.</p><div class="actions"><button onclick="service('start')">Start</button><button class="secondary" onclick="service('restart')">Restart</button><button class="danger" onclick="service('stop')">Stop</button></div><div id="notice" class="notice"></div></section>
     <section class="card"><h2>Runtime output</h2><p>Recent supervisor output (secrets are not intentionally printed).</p><pre id="logs">Loading...</pre></section>
+    <section class="card"><h2>Subsystem health</h2><p>Process status and functional state are reported separately.</p><div id="health" class="items">Loading...</div></section>
+    <section class="card"><h2>Confirmation inbox</h2><p>Unclear or low-confidence notices wait here.</p><div id="inbox" class="items">Loading...</div></section>
+    <section class="card"><h2>Schedule</h2><p>Recurring occurrences for the next 14 days.</p><div id="schedule" class="items">Loading...</div></section>
+    <section class="card"><h2>Content-free AI metrics</h2><p>Only counts, latency, and character totals are retained.</p><div id="metrics" class="items">Loading...</div></section>
+    <section class="card wide"><h2>Tasks and provenance</h2><p>Local task state, due dates, and source linkage.</p><div id="tasks" class="items">Loading...</div></section>
     <section class="card wide"><h2>Initial configuration</h2><p>Only keys from the project configuration contract can be written. Masked secrets are preserved when unchanged.</p>
       <form id="config">
         <label>AI provider<select name="AI_PROVIDER"><option>openai</option><option>deepseek</option><option>default</option><option>codex</option><option>opencode</option><option>claude</option><option>agy</option></select></label>
@@ -32,7 +38,7 @@
         <label>Temperature<input name="LLM_TEMPERATURE" type="number" step="0.1" min="0" max="2"></label>
         <label>Enable QQ<select name="ENABLE_QQ"><option value="false">false</option><option value="true">true</option></select></label>
         <label>Enable WeChat<select name="ENABLE_WECHAT"><option value="false">false</option><option value="true">true</option></select></label>
-        <label>Enable Microsoft To Do<select name="ENABLE_MS_TODO"><option value="true">true</option><option value="false">false</option></select></label>
+        <label>Enable Microsoft To Do<select name="ENABLE_MS_TODO"><option value="false">false</option><option value="true">true</option></select></label>
         <label>Admin QQ<input name="ADMIN_QQ"></label>
         <label>Target group IDs<input name="TARGET_GROUP_IDS" placeholder="123,456"></label>
         <label class="full">NapCat HTTP URL<input name="NAPCAT_HTTP_URL"></label>
@@ -49,10 +55,21 @@
     function setNotice(text, bad=false) { const el=document.querySelector('#notice'); el.textContent=text; el.style.color=bad?'var(--danger)':'#fbd38d'; }
     async function api(path, options={}) { const r=await fetch(path,options); const d=await r.json(); if(!r.ok) throw Error(d.error||'Request failed'); return d; }
     async function refresh() { try { const s=await api('/api/status'); const dot=document.querySelector('.dot'); dot.classList.toggle('on',s.running); document.querySelector('#status span:last-child').textContent=s.running?`Running (PID ${s.pid})`:'Stopped'; document.querySelector('#logs').textContent=s.logs.join('\n')||'No output yet'; } catch(e) { setNotice(e.message,true); } }
+    function esc(v) { const d=document.createElement('div'); d.textContent=String(v??''); return d.innerHTML; }
+    async function loadOperations() {
+      const [health,tasks,inbox,schedule,metrics]=await Promise.all([api('/api/health'),api('/api/tasks'),api('/api/inbox'),api('/api/schedule'),api('/api/metrics')]);
+      document.querySelector('#health').innerHTML=Object.entries(health).map(([k,v])=>`<div class="item"><b>${esc(k)}</b><div class="meta">${esc(JSON.stringify(v))}</div></div>`).join('');
+      document.querySelector('#tasks').innerHTML=tasks.map(t=>`<div class="item"><b>${esc(t.title)}</b><div class="meta">${esc(t.status)} · ${esc(t.due_at||'no due date')} · source ${esc(t.source_message_id||'manual')}</div><div class="actions"><button onclick="taskAction('${esc(t.id)}','complete')">Complete</button><button class="secondary" onclick="taskAction('${esc(t.id)}','defer',{days:1})">+1 day</button><button class="secondary" onclick="taskAction('${esc(t.id)}','undo')">Undo</button></div></div>`).join('')||'<div class="meta">No tasks</div>';
+      document.querySelector('#inbox').innerHTML=inbox.map(i=>`<div class="item"><b>${esc(i.proposal.title||'Candidate')}</b><div class="meta">${esc(i.reason)}</div><div class="actions"><button onclick="inboxAction('${esc(i.id)}','accept')">Accept</button><button class="danger" onclick="inboxAction('${esc(i.id)}','reject')">Reject</button></div></div>`).join('')||'<div class="meta">Inbox empty</div>';
+      document.querySelector('#schedule').innerHTML=schedule.map(i=>`<div class="item"><b>${esc(i.title)}</b><div class="meta">${esc(i.date)} · ${esc(i.start_time)}–${esc(i.end_time)}${i.location?' · '+esc(i.location):''}</div></div>`).join('')||'<div class="meta">No scheduled occurrences</div>';
+      document.querySelector('#metrics').innerHTML=Object.entries(metrics).map(([k,v])=>`<div class="item"><b>${esc(k)}</b><div class="meta">${esc(v)}</div></div>`).join('');
+    }
+    async function taskAction(id,action,body={}) { await api(`/api/tasks/${id}/${action}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); loadOperations(); }
+    async function inboxAction(id,action) { await api(`/api/inbox/${id}/${action}`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}); loadOperations(); }
     async function loadConfig() { const c=await api('/api/config'); fields.forEach(f=>{if(c[f.name]!==undefined) f.value=c[f.name]}); }
     async function service(action) { try { await api('/api/service/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}); setNotice(action+' requested.'); refresh(); } catch(e) { setNotice(e.message,true); } }
     document.querySelector('#config').addEventListener('submit', async e=>{e.preventDefault(); const body={}; fields.forEach(f=>body[f.name]=f.value); try { await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); setNotice('Saved. Restart the service to apply changes.'); } catch(e) { setNotice(e.message,true); }});
-    loadConfig().catch(e=>setNotice(e.message,true)); refresh(); setInterval(refresh,3000);
+    loadConfig().catch(e=>setNotice(e.message,true)); refresh(); loadOperations().catch(e=>setNotice(e.message,true)); setInterval(refresh,3000); setInterval(()=>loadOperations().catch(()=>{}),10000);
   </script>
 </body>
 </html>

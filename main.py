@@ -23,6 +23,11 @@ if str(PROJECT_ROOT) not in sys.path:
 from core import config
 from core.config import setup_logging
 from core.cli_manager import ensure_cli
+from core.database import Database
+from core.remote_todo import MicrosoftTodoRemote
+from core.task_service import TaskService
+from core.assistant_features import AssistantFeatures
+from core.scheduler import Scheduler
 
 logger = logging.getLogger("OmniMain")
 
@@ -43,7 +48,7 @@ async def run_wechat_subprocess(stop_event: asyncio.Event):
     """Run the WeChat adapter and keep the supervisor alive across child exits."""
     wechat_script = PROJECT_ROOT / "adapters" / "wechat" / "wechat_bot.js"
     if not wechat_script.exists():
-        logger.error(f"微信适配器脚本不存在: {wechat_script}")
+        logger.error("微信适配器脚本不存在")
         return
 
     while not stop_event.is_set():
@@ -76,7 +81,7 @@ async def run_wechat_subprocess(stop_event: asyncio.Event):
                 await proc.wait()
             raise
         except OSError as exc:
-            logger.error("启动微信适配器失败: %s，5 秒后重试", exc)
+            logger.error("启动微信适配器失败 (%s)，5 秒后重试", type(exc).__name__)
             await asyncio.sleep(5)
 
 async def main():
@@ -96,12 +101,12 @@ async def main():
     if config.AI_PROVIDER not in ("openai", "deepseek", "default"):
         try:
             cli_path = ensure_cli(config.AI_PROVIDER)
-            logger.info("AI CLI 已就绪: %s (%s)", config.AI_PROVIDER, cli_path)
+            logger.info("AI CLI 已就绪: %s", config.AI_PROVIDER)
         except Exception as exc:
-            logger.error("AI CLI 未就绪: %s", exc)
+            logger.error("AI CLI 未就绪: %s", type(exc).__name__)
             return 2
-    logger.info(f"AI 驱动引擎: [OPENAI-COMPATIBLE] (Model: {config.LLM_MODEL})")
-    logger.info(f"OpenAI-compatible Base URL: {config.LLM_BASE_URL}")
+    logger.info("AI 驱动引擎: [OPENAI-COMPATIBLE] (Model configured=%s)", bool(config.LLM_MODEL))
+    logger.info("OpenAI-compatible endpoint configured=%s", bool(config.LLM_BASE_URL))
 
     qq_status = "✅ 已启用" if config.ENABLE_QQ else "⏸️ 未启用 (跳过)"
     wechat_status = "✅ 已启用" if config.ENABLE_WECHAT else "⏸️ 未启用 (跳过)"
@@ -124,6 +129,17 @@ async def main():
 
     tasks = []
     stop_event = asyncio.Event()
+    database = Database(config.DATABASE_FILE)
+    task_service = TaskService(database, MicrosoftTodoRemote() if config.ENABLE_MS_TODO else None)
+    scheduler = Scheduler(
+        AssistantFeatures(database, task_service),
+        task_service,
+        notify=lambda kind, payload: database.add_notification(kind, payload),
+        daily_time=config.DAILY_DIGEST_TIME,
+        weekly_day=config.WEEKLY_REVIEW_DAY,
+        quiet_hours=config.QUIET_HOURS,
+    )
+    tasks.append(asyncio.create_task(scheduler.run(stop_event)))
 
     if config.ENABLE_QQ:
         from adapters.qq.qqbot_agent import run_qq_adapter
@@ -151,8 +167,8 @@ async def main():
         await asyncio.gather(*tasks)
     except asyncio.CancelledError:
         logger.info("各通道任务已安全取消。")
-    except Exception as e:
-        logger.error(f"运行中发生异常: {e}")
+    except Exception as exc:
+        logger.error("运行中发生异常: %s", type(exc).__name__)
 
     logger.info("Omni-Assistant 服务已安全停止。")
     return 0

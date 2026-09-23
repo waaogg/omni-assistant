@@ -5,12 +5,28 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
+DynamicUser=yes
 WorkingDirectory=/opt/omni-assistant
 ExecStart=/usr/bin/python3 /opt/omni-assistant/main.py
 Restart=always
 RestartSec=5s
 EnvironmentFile=-/opt/omni-assistant/.env
+Environment=HOME=/var/lib/omni-assistant
+Environment=DATABASE_FILE_PATH=/var/lib/omni-assistant/omni.db
+Environment=HISTORY_FILE_PATH=/var/lib/omni-assistant/group_history.json
+Environment=MEMORY_FILE_PATH=/var/lib/omni-assistant/synced_todos.json
+Environment=WECHAT_DATA_DIR=/var/lib/omni-assistant/wechat
+StateDirectory=omni-assistant
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/omni-assistant
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
 StandardOutput=journal
 StandardError=journal
 

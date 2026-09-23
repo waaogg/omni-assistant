@@ -29,7 +29,7 @@ def load_json(path: Path, default: Any) -> Any:
             with path.open("r", encoding="utf-8") as handle:
                 return json.load(handle)
         except (OSError, json.JSONDecodeError) as exc:
-            logger.error("Failed to load JSON state from %s: %s", path, exc)
+            logger.error("Failed to load JSON state: %s", type(exc).__name__)
             return default
 
 

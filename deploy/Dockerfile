@@ -15,11 +15,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Install Python & Node dependencies
-COPY requirements.txt package.json ./
-RUN pip install --no-cache-dir -r requirements.txt \
-    && npm install --omit=dev
+COPY requirements.lock package.json package-lock.json ./
+RUN pip install --no-cache-dir -r requirements.lock \
+    && npm ci --omit=dev
 
 # Copy application source
 COPY . .
+
+RUN addgroup --system omni-assistant \
+    && adduser --system --ingroup omni-assistant --home /app omni-assistant \
+    && chown -R omni-assistant:omni-assistant /app
+
+USER omni-assistant
 
 CMD ["python3", "main.py"]

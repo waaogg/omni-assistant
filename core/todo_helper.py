@@ -73,6 +73,7 @@ import(authPath).then(async (m) => {
     const body = {};
     if (payload.title) body.title = payload.title;
     if (payload.content !== undefined) body.body = { content: payload.content, contentType: "text" };
+    if (payload.status) body.status = payload.status;
     if (payload.dueIso) {
       body.dueDateTime = { dateTime: payload.dueIso, timeZone: "Asia/Shanghai" };
     }
@@ -114,23 +115,30 @@ import(authPath).then(async (m) => {
       console.log(JSON.stringify({ success: false, error: data }));
     }
   } else if (action === "list") {
-    const res = await fetch(`https://graph.microsoft.com/v1.0/me/todo/lists/${listId}/tasks?$filter=status ne 'completed'`, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    const data = await res.json();
-    if (data && data.value) {
+    let nextUrl = `https://graph.microsoft.com/v1.0/me/todo/lists/${listId}/tasks?$top=100`;
+    const allTasks = [];
+    let failure = null;
+    while (nextUrl) {
+      const res = await fetch(nextUrl, { headers: { Authorization: `Bearer ${token}` } });
+      const page = await res.json();
+      if (!res.ok || !page.value) { failure = page; break; }
+      allTasks.push(...page.value);
+      nextUrl = page['@odata.nextLink'] || null;
+    }
+    if (!failure) {
       console.log(JSON.stringify({
         success: true,
-        tasks: data.value.map(t => ({
+        tasks: allTasks.map(t => ({
           id: t.id,
           title: t.title,
           body: t.body ? t.body.content : "",
+          status: t.status === 'completed' ? 'completed' : 'open',
           dueDateTime: t.dueDateTime,
           reminderDateTime: t.reminderDateTime
         }))
       }));
     } else {
-      console.log(JSON.stringify({ success: false, error: data }));
+      console.log(JSON.stringify({ success: false, error: failure }));
     }
   }
 }).catch((err) => {
@@ -158,10 +166,10 @@ def _run_node_todo(action: str, payload: dict) -> dict:
         lines = [line.strip() for line in stdout.split("\n") if line.strip().startswith("{") and line.strip().endswith("}")]
         if lines:
             return json.loads(lines[-1])
-        return {"success": False, "error": res.stderr.strip() or stdout}
-    except Exception as e:
-        logger.error(f"Failed to execute node todo script ({action}): {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": "Microsoft To Do helper returned no valid response"}
+    except Exception as exc:
+        logger.error("Microsoft To Do helper failed (%s): %s", action, type(exc).__name__)
+        return {"success": False, "error": "Microsoft To Do helper failed"}
 
 def parse_iso_times(when_text: str) -> Tuple[Optional[str], Optional[str]]:
     """Parse human readable time into ISO 8601 due_iso and reminder_iso."""
@@ -207,7 +215,7 @@ def add_todo_task(title: str, content: str = "", when_text: str = "", is_shoppin
         payload["listId"] = list_id
     return _run_node_todo("create", payload)
 
-def update_todo_task(task_id: str, title: Optional[str] = None, content: Optional[str] = None, when_text: Optional[str] = None, is_shopping: bool = False, list_id: Optional[str] = None) -> dict:
+def update_todo_task(task_id: str, title: Optional[str] = None, content: Optional[str] = None, when_text: Optional[str] = None, is_shopping: bool = False, list_id: Optional[str] = None, status: Optional[str] = None) -> dict:
     payload = {"taskId": task_id}
     if title:
         payload["title"] = title
@@ -222,6 +230,8 @@ def update_todo_task(task_id: str, title: Optional[str] = None, content: Optiona
             payload["isReminderOn"] = True
     if is_shopping:
         payload["isReminderOn"] = False
+    if status:
+        payload["status"] = "completed" if status == "completed" else "notStarted"
     if list_id:
         payload["listId"] = list_id
     return _run_node_todo("update", payload)
@@ -233,10 +243,13 @@ def delete_todo_task(task_id: str, list_id: Optional[str] = None) -> dict:
     return _run_node_todo("delete", payload)
 
 def list_active_todo_tasks(list_id: Optional[str] = None) -> list:
-    payload = {}
-    if list_id:
-        payload["listId"] = list_id
-    res = _run_node_todo("list", payload)
+    res = list_todo_tasks_result(list_id)
     if res.get("success"):
         return res.get("tasks", [])
     return []
+
+def list_todo_tasks_result(list_id: Optional[str] = None) -> dict:
+    payload = {}
+    if list_id:
+        payload["listId"] = list_id
+    return _run_node_todo("list", payload)

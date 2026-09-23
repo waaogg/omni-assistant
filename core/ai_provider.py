@@ -6,11 +6,13 @@ import urllib.error
 import asyncio
 import subprocess
 import shlex
+import time
 from typing import Callable
 from typing import List, Dict, Any, Optional
 
 from core import config
 from core.cli_manager import ensure_cli
+from core.metrics import record_ai_metric
 
 logger = logging.getLogger("AIProvider")
 
@@ -41,6 +43,8 @@ def _call_openai_compatible(messages: List[Dict[str, str]], temperature: Optiona
         headers["Authorization"] = f"Bearer {config.LLM_API_KEY}"
 
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    started = time.monotonic()
+    input_chars = sum(len(str(message.get("content", ""))) for message in messages)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8")
@@ -54,16 +58,23 @@ def _call_openai_compatible(messages: List[Dict[str, str]], temperature: Optiona
             content = choices[0].get("message", {}).get("content", "")
             if not isinstance(content, str):
                 raise AIProviderError("LLM response content must be a string")
-            return content.strip()
+            output = content.strip()
+            record_ai_metric(config.AI_PROVIDER, config.LLM_MODEL, (time.monotonic() - started) * 1000, True, input_chars, len(output))
+            return output
     except urllib.error.HTTPError as e:
-        err_body = e.read().decode("utf-8", errors="replace")
-        logger.error(f"OpenAI-compatible HTTP {e.code} error from {url}: {err_body}")
-        raise AIProviderError(f"HTTP {e.code}: {err_body}") from e
+        # Provider error bodies can echo request content.  Do not copy them to
+        # logs or user-visible exceptions.
+        e.read()
+        logger.error("OpenAI-compatible HTTP %s error from configured endpoint", e.code)
+        record_ai_metric(config.AI_PROVIDER, config.LLM_MODEL, (time.monotonic() - started) * 1000, False, input_chars)
+        raise AIProviderError(f"LLM endpoint returned HTTP {e.code}") from e
     except urllib.error.URLError as e:
-        logger.error(f"OpenAI-compatible connection failed to {url}: {e.reason}")
+        logger.error("OpenAI-compatible connection failed")
+        record_ai_metric(config.AI_PROVIDER, config.LLM_MODEL, (time.monotonic() - started) * 1000, False, input_chars)
         raise AIProviderError(f"Connection failed: {e.reason}") from e
     except Exception as e:
-        logger.error(f"Unexpected error calling LLM {url}: {e}")
+        logger.error("Unexpected error calling configured LLM endpoint: %s", type(e).__name__)
+        record_ai_metric(config.AI_PROVIDER, config.LLM_MODEL, (time.monotonic() - started) * 1000, False, input_chars)
         raise AIProviderError(str(e)) from e
 
 
@@ -79,21 +90,30 @@ def _openai_request(messages, temperature=None, timeout=60, tools=None):
         payload["tools"] = tools
     headers = {"Content-Type": "application/json"}
     if config.LLM_API_KEY:
-        headers["Authorization"] = f"******"
+        headers["Authorization"] = f"Bearer {config.LLM_API_KEY}"
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
         headers=headers,
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        body = resp.read().decode("utf-8")
+    started = time.monotonic()
+    input_chars = len(json.dumps(messages, ensure_ascii=False))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8")
+    except Exception:
+        record_ai_metric(config.AI_PROVIDER, config.LLM_MODEL, (time.monotonic() - started) * 1000, False, input_chars)
+        raise
     try:
         result = json.loads(body)
     except json.JSONDecodeError as exc:
+        record_ai_metric(config.AI_PROVIDER, config.LLM_MODEL, (time.monotonic() - started) * 1000, False, input_chars)
         raise AIProviderError("LLM endpoint returned invalid JSON") from exc
     if not result.get("choices"):
+        record_ai_metric(config.AI_PROVIDER, config.LLM_MODEL, (time.monotonic() - started) * 1000, False, input_chars)
         raise AIProviderError("LLM endpoint returned no choices")
+    record_ai_metric(config.AI_PROVIDER, config.LLM_MODEL, (time.monotonic() - started) * 1000, True, input_chars, len(body))
     return result
 
 
@@ -163,12 +183,14 @@ def _call_cli(prompt: str, timeout: int = 300) -> str:
 def _call_cli_raw(prompt: str, timeout: int = 300) -> str:
     executable = ensure_cli(config.AI_PROVIDER)
     command = _cli_command(config.AI_PROVIDER, executable, prompt)
+    started = time.monotonic()
     result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
     if result.returncode != 0:
-        raise AIProviderError(
-            f"{config.AI_PROVIDER} CLI failed (exit {result.returncode}): "
-            f"{(result.stderr or result.stdout).strip()}"
-        )
+        record_ai_metric(config.AI_PROVIDER, config.LLM_MODEL, (time.monotonic() - started) * 1000, False, len(prompt))
+        # CLI output may echo the prompt, so it must not escape into logs or
+        # channel responses through an exception.
+        raise AIProviderError(f"{config.AI_PROVIDER} CLI failed (exit {result.returncode})")
+    record_ai_metric(config.AI_PROVIDER, config.LLM_MODEL, (time.monotonic() - started) * 1000, True, len(prompt), len(result.stdout))
     return result.stdout
 
 

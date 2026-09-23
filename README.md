@@ -24,6 +24,14 @@ and answer administrator requests through a configurable AI backend.
   - Converts notices into tasks with semantic duplicate/update decisions.
   - Preserves start/end time text and creates native due/reminder timestamps.
   - Uses a local signature cache to avoid duplicate task creation.
+- **Reliable task inbox**
+  - Persists messages before analysis and deduplicates channel events.
+  - Splits compound notices and routes uncertain items to a confirmation inbox.
+  - Records provenance, changes, undo history, sync state, and retry failures.
+- **Personal operations**
+  - Adds source-grounded search, digests, reviews, follow-ups, schedule conflict
+    checks, explicit preferences, and four-quadrant views.
+  - Shares one task state across QQ, WeChat, and the dashboard.
 - **Pluggable AI backends**
   - OpenAI-compatible HTTP APIs: DeepSeek, OpenAI, Moonshot, Qwen, Ollama,
     vLLM, and compatible gateways.
@@ -63,7 +71,7 @@ only, or both.
 ### 1. Install
 
 ```bash
-git clone https://github.com/waaogg/omni-assistant.git
+git clone https://github.com/your-account/omni-assistant.git
 cd omni-assistant
 
 python -m pip install -r requirements.txt
@@ -225,6 +233,11 @@ Runtime data is intentionally excluded from Git:
 Do not commit personal IDs, tokens, cookies, or downloaded media. Review
 `.gitignore` before deploying or sharing a backup.
 
+The v2 database is `data/omni.db`. Channel identifiers are hashed, while task,
+message, document, and preference content remains private. Use encrypted
+backups and keep runtime state separate from the code checkout. See
+[`docs/SECURITY.md`](docs/SECURITY.md) and [`docs/MIGRATION.md`](docs/MIGRATION.md).
+
 ## Development and verification
 
 Run the complete test suite:
@@ -271,6 +284,11 @@ using Compose in production.
 
 Use `deploy/systemd/omni-assistant.service` as a starting point. Change the
 working directory, service user, and environment file path for the target host.
+
+### PM2
+
+`deploy/pm2/ecosystem.config.js` provides restart delay, graceful shutdown,
+timestamps, and a configurable memory ceiling without hard-coded private paths.
 
 ## License
 

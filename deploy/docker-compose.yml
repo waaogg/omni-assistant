@@ -3,7 +3,8 @@ version: '3.8'
 services:
   # NapCat OneBot v11 QQ 协议容器 (当 ENABLE_QQ=true 时使用)
   napcat:
-    image: mlikiowa/napcat-docker:latest
+    # Production deployments must set an immutable tag or digest.
+    image: ${NAPCAT_IMAGE:?Set NAPCAT_IMAGE to a pinned NapCat tag or digest}
     container_name: napcat
     restart: always
     environment:
@@ -13,9 +14,9 @@ services:
       - ./data/napcat/config:/app/napcat/config
       - ./data/napcat/data:/app/.config/QQ
     ports:
-      - "3000:3000"
-      - "3001:3001"
-      - "6099:6099"
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:3001:3001"
+      - "127.0.0.1:6099:6099"
     networks:
       - assistant-net
 
@@ -30,6 +31,10 @@ services:
       - ../.env
     volumes:
       - ../data:/app/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     depends_on:
       - napcat
     networks:

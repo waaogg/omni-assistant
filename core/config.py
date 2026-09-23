@@ -63,6 +63,13 @@ def _get_float(key: str, default: float = 0.0) -> float:
         CONFIG_ERRORS.append(f"{key} must be a number")
         return default
 
+def re_match_time(value: str) -> bool:
+    try:
+        hour, minute = (int(part) for part in value.strip().split(":", 1))
+        return 0 <= hour <= 23 and 0 <= minute <= 59
+    except (ValueError, TypeError):
+        return False
+
 # 1. Channel Toggles
 ENABLE_QQ = _get_bool("ENABLE_QQ", False)
 ENABLE_WECHAT = _get_bool("ENABLE_WECHAT", False)
@@ -95,7 +102,7 @@ WECHAT_BASE_URL = os.getenv("WECHAT_BASE_URL", "https://ilinkai.weixin.qq.com").
 WECHAT_DATA_DIR = Path(os.getenv("WECHAT_DATA_DIR", str(PROJECT_ROOT / "data" / "wechat")))
 
 # 5. Microsoft To Do Integration
-ENABLE_MS_TODO = _get_bool("ENABLE_MS_TODO", True)
+ENABLE_MS_TODO = _get_bool("ENABLE_MS_TODO", False)
 MS_TODO_DEFAULT_LIST_ID = os.getenv("MS_TODO_DEFAULT_LIST_ID", "").strip()
 MS_TODO_AUTH_MODULE_PATH = os.getenv(
     "MS_TODO_AUTH_MODULE_PATH",
@@ -106,7 +113,21 @@ DEFAULT_REMINDER_ADVANCE_MINUTES = _get_int("DEFAULT_REMINDER_ADVANCE_MINUTES", 
 # 6. Persistence & Logging
 HISTORY_FILE = Path(os.getenv("HISTORY_FILE_PATH", str(PROJECT_ROOT / "data" / "group_history.json")))
 MEMORY_FILE = Path(os.getenv("MEMORY_FILE_PATH", str(PROJECT_ROOT / "data" / "synced_todos.json")))
+DATABASE_FILE = Path(os.getenv("DATABASE_FILE_PATH", str(PROJECT_ROOT / "data" / "omni.db")))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+# Privacy and automation policy. Personal values belong in .env or the
+# dashboard; the repository intentionally carries only neutral defaults.
+AUTO_APPLY_CONFIDENCE = _get_float("AUTO_APPLY_CONFIDENCE", 0.92)
+MESSAGE_BATCH_WINDOW_SECONDS = _get_int("MESSAGE_BATCH_WINDOW_SECONDS", 20)
+MAX_MESSAGE_ATTEMPTS = _get_int("MAX_MESSAGE_ATTEMPTS", 5)
+ALLOWED_WECHAT_USER_IDS = {
+    value.strip() for value in os.getenv("ALLOWED_WECHAT_USER_IDS", "").split(",") if value.strip()
+}
+REQUIRE_CONFIRMATION_FOR_DELETE = _get_bool("REQUIRE_CONFIRMATION_FOR_DELETE", True)
+DAILY_DIGEST_TIME = os.getenv("DAILY_DIGEST_TIME", "08:00").strip()
+WEEKLY_REVIEW_DAY = _get_int("WEEKLY_REVIEW_DAY", 0)
+QUIET_HOURS = os.getenv("QUIET_HOURS", "22:00-07:00").strip()
 
 
 def validate_config() -> List[str]:
@@ -118,6 +139,20 @@ def validate_config() -> List[str]:
         errors.append("LLM_TEMPERATURE must be between 0 and 2")
     if DEFAULT_REMINDER_ADVANCE_MINUTES < 0:
         errors.append("DEFAULT_REMINDER_ADVANCE_MINUTES cannot be negative")
+    if not 0 <= AUTO_APPLY_CONFIDENCE <= 1:
+        errors.append("AUTO_APPLY_CONFIDENCE must be between 0 and 1")
+    if MESSAGE_BATCH_WINDOW_SECONDS < 0:
+        errors.append("MESSAGE_BATCH_WINDOW_SECONDS cannot be negative")
+    if MAX_MESSAGE_ATTEMPTS < 1:
+        errors.append("MAX_MESSAGE_ATTEMPTS must be at least 1")
+    if not 0 <= WEEKLY_REVIEW_DAY <= 6:
+        errors.append("WEEKLY_REVIEW_DAY must be between 0 and 6")
+    for key, value in (("DAILY_DIGEST_TIME", DAILY_DIGEST_TIME),):
+        if not re_match_time(value):
+            errors.append(f"{key} must use HH:MM")
+    parts = QUIET_HOURS.split("-", 1)
+    if len(parts) != 2 or not all(re_match_time(part) for part in parts):
+        errors.append("QUIET_HOURS must use HH:MM-HH:MM")
     if ENABLE_QQ:
         if ADMIN_QQ <= 0:
             errors.append("ADMIN_QQ must be a positive integer when ENABLE_QQ=true")
@@ -136,6 +171,7 @@ def validate_config() -> List[str]:
 # Ensure storage directories exist
 HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
 MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+DATABASE_FILE.parent.mkdir(parents=True, exist_ok=True)
 WECHAT_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Logger setup helper

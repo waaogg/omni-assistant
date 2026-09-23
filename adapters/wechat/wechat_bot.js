@@ -8,6 +8,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
+const { spawn } = require('node:child_process');
 
 // Load environment from root .env if present
 const rootEnvPath = path.resolve(__dirname, '../../.env');
@@ -29,7 +30,11 @@ if (fs.existsSync(rootEnvPath)) {
 
 function log(msg) {
   const ts = new Date().toLocaleTimeString('zh-CN', { hour12: false });
-  console.log(`[${ts}] [WeChat] ${msg}`);
+  let safe = String(msg).replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]');
+  for (const secret of [process.env.LLM_API_KEY, process.env.NAPCAT_TOKEN]) {
+    if (secret) safe = safe.split(secret).join('[REDACTED]');
+  }
+  console.log(`[${ts}] [WeChat] ${safe}`);
 }
 
 // 1. Channel Enable Check
@@ -203,7 +208,7 @@ async function loginFlow() {
   if (qrcodeTerminal) {
     qrcodeTerminal.generate(qrUrl, { small: true });
   } else {
-    log(`二维码链接: ${qrUrl}`);
+    throw new Error('缺少 qrcode-terminal，无法安全显示登录二维码');
   }
 
   log(`\n长轮询等待微信确认授权中...`);
@@ -527,6 +532,36 @@ function getNowGmt8Str() {
   return `${y}年${m}月${day}日 ${w} ${h}:${min}:${s} (GMT+8)`;
 }
 
+function executeUnifiedTextAgent(userId, text) {
+  return new Promise((resolve, reject) => {
+    const python = process.env.PYTHON_BIN_PATH || (process.platform === 'win32' ? 'python.exe' : 'python3');
+    const script = path.resolve(__dirname, '../../scripts/channel_agent.py');
+    const child = spawn(python, [script, '--channel', 'wechat'], {
+      cwd: path.resolve(__dirname, '../..'),
+      env: { ...process.env },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => { child.kill('SIGTERM'); reject(new Error('统一智能体执行超时')); }, 300000);
+    child.stdout.on('data', data => { stdout += data.toString(); });
+    child.stderr.on('data', data => { stderr += data.toString(); });
+    child.on('error', err => { clearTimeout(timer); reject(err); });
+    child.on('close', code => {
+      clearTimeout(timer);
+      if (code !== 0) return reject(new Error(`统一智能体失败 (${code}): ${stderr.slice(0, 300)}`));
+      try {
+        const lines = stdout.trim().split(/\r?\n/).filter(Boolean);
+        const parsed = JSON.parse(lines[lines.length - 1]);
+        resolve({ response: String(parsed.response || ''), conversationId: null });
+      } catch {
+        reject(new Error('统一智能体返回了无效 JSON'));
+      }
+    });
+    child.stdin.end(JSON.stringify({ user: String(userId), text }));
+  });
+}
+
 async function runDaemon() {
   let auth = loadAuth();
   if (!auth || !auth.botToken) {
@@ -535,9 +570,9 @@ async function runDaemon() {
   }
 
   log(`🤖 微信通道适配器已就绪！`);
-  log(`📡 腾讯 iLink 官方网关: ${auth.baseUrl}`);
+  log('📡 腾讯 iLink 官方网关已配置');
   log(`🧠 AI 驱动模式: ${AI_PROVIDER} (${LLM_MODEL})`);
-  log(`📂 工作区数据目录: ${DATA_DIR}`);
+  log('📂 工作区数据目录已配置');
   log(`💬 开始监听微信私聊消息...`);
 
   try {
@@ -551,6 +586,10 @@ async function runDaemon() {
 
   const conversations = loadConversations();
   let syncBuf = loadSyncBuf();
+  const configuredAllowedUsers = new Set(
+    (process.env.ALLOWED_WECHAT_USER_IDS || '').split(',').map(v => v.trim()).filter(Boolean)
+  );
+  if (configuredAllowedUsers.size === 0 && auth.userId) configuredAllowedUsers.add(String(auth.userId));
 
   while (true) {
     try {
@@ -570,7 +609,7 @@ async function runDaemon() {
                          (updates.errcode !== undefined && updates.errcode !== 0);
 
       if (isApiError) {
-        log(`⚠️ 轮询返回 ret=${updates.ret}, errcode=${updates.errcode}, errmsg=${updates.errmsg || 'none'}`);
+        log(`⚠️ 轮询返回 ret=${updates.ret}, errcode=${updates.errcode}`);
         if (updates.ret === -14 || updates.errcode === -14) {
           log('⚠️ 微信会话凭据已失效，准备重新登录...');
           auth = await loginFlow();
@@ -586,7 +625,10 @@ async function runDaemon() {
       }
 
       const msgs = updates.msgs || [];
-      const validMsgs = msgs.filter(m => m.from_user_id !== auth.botId && m.message_type !== 2);
+      const validMsgs = msgs.filter(m => {
+        if (m.from_user_id === auth.botId || m.message_type === 2) return false;
+        return configuredAllowedUsers.size === 0 || configuredAllowedUsers.has(String(m.from_user_id));
+      });
 
       const userGroups = new Map();
       for (const msg of validMsgs) {
@@ -740,7 +782,14 @@ async function runDaemon() {
           const finalPrompt = timeHeader + promptForAI;
           log(`⚙️ 正在调用 AI (${AI_PROVIDER}) 推理执行...`);
           const convId = conversations[fromUser];
-          const result = await executeAI(finalPrompt, convId);
+          const attachments = [
+            ...downloadedImages,
+            ...downloadedVideos.flatMap(v => [v.filePath, v.thumbPath].filter(Boolean)),
+            ...downloadedFiles.map(f => f.filePath).filter(Boolean),
+          ];
+          const result = attachments.length === 0
+            ? await executeUnifiedTextAgent(fromUser, finalPrompt)
+            : await executeAI(finalPrompt, convId, null, attachments);
 
           if (result.conversationId) {
             conversations[fromUser] = result.conversationId;
@@ -749,17 +798,17 @@ async function runDaemon() {
 
           if (typingInterval) clearInterval(typingInterval);
 
-          log(`[正在回复 ${fromUser}]: ${result.response.slice(0, 60)}...`);
+          log(`正在生成并发送回复...`);
           await sendWechatMessage(auth, fromUser, latestContextToken, result.response);
           log(`✅ 回复发送成功！`);
         } catch (execErr) {
           if (typingInterval) clearInterval(typingInterval);
-          log(`❌ AI 执行失败: ${execErr.message}`);
-          await sendWechatMessage(auth, fromUser, latestContextToken, `⚠️ 执行出错: ${execErr.message}`);
+          log(`❌ AI 执行失败 (${execErr.name || 'Error'})`);
+          await sendWechatMessage(auth, fromUser, latestContextToken, '⚠️ 执行出错，请稍后重试。');
         }
       }
     } catch (pollErr) {
-      log(`长轮询异常: ${pollErr.message}，3秒后重试`);
+      log(`长轮询异常 (${pollErr.name || 'Error'})，3秒后重试`);
       await new Promise((r) => setTimeout(r, 3000));
     }
   }
@@ -767,7 +816,7 @@ async function runDaemon() {
 
 if (require.main === module) {
   runDaemon().catch((err) => {
-    log(`❌ 微信适配器致命异常: ${err.message}`);
+    log(`❌ 微信适配器致命异常 (${err.name || 'Error'})`);
     process.exit(1);
   });
 }

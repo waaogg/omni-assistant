@@ -14,7 +14,7 @@ import logging
 import os
 import re
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List
 
 from core import config
@@ -26,15 +26,23 @@ from core.todo_manager import (
     delete_task_with_memory,
     add_task_with_memory,
     update_task_with_memory,
-    load_memory
+    load_memory,
+    evaluate_notice_batch,
 )
 from core.cleaner import clean_qq_markdown, strip_tool_leak
 from core.storage import load_json, save_json
+from core.database import Database
+from core.remote_todo import MicrosoftTodoRemote
+from core.task_service import TaskService
+from core.channel_agent import ChannelAgent
 
 logger = logging.getLogger("QQAdapter")
 
 last_seen_message_ids: Dict[int, int] = {}
 ADMIN_CHAT_HISTORY: List[Dict[str, str]] = []
+DATABASE = Database(config.DATABASE_FILE)
+TASK_SERVICE = TaskService(DATABASE, MicrosoftTodoRemote() if config.ENABLE_MS_TODO else None)
+CHANNEL_AGENT = ChannelAgent(DATABASE, TASK_SERVICE)
 
 def save_group_message(record: dict):
     hist_file = config.HISTORY_FILE
@@ -46,8 +54,8 @@ def save_group_message(record: dict):
         records = records[-300:]
     try:
         save_json(hist_file, records)
-    except Exception as e:
-        logger.error(f"保存群消息历史失败: {e}")
+    except Exception as exc:
+        logger.error("保存群消息历史失败: %s", type(exc).__name__)
 
 def load_local_group_messages(limit: int = 80) -> list:
     hist_file = config.HISTORY_FILE
@@ -66,8 +74,8 @@ def call_napcat_api(action: str, params: dict) -> dict:
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read().decode("utf-8"))
-    except Exception as e:
-        logger.error(f"调用 NapCat API {action} 失败: {e}")
+    except Exception as exc:
+        logger.error("调用 NapCat API %s 失败: %s", action, type(exc).__name__)
         return {}
 
 def send_private_msg(user_id: int, text: str):
@@ -189,7 +197,7 @@ AGENT_TOOLS = [
 ]
 
 def execute_agent_tool(name: str, args: dict) -> str:
-    logger.info(f"QQ Agent 调用工具: {name}, 参数: {args}")
+    logger.info("QQ Agent 调用工具: %s (参数字段=%s)", name, sorted(args))
     if name == "list_todos":
         tasks = get_all_active_tasks()
         return json.dumps(tasks, ensure_ascii=False)
@@ -226,88 +234,13 @@ def execute_agent_tool(name: str, args: dict) -> str:
     return json.dumps({"error": f"Unknown tool {name}"})
 
 def run_admin_agent(user_text: str) -> str:
-    """针对管理员私聊消息的 ReAct 闭环智能体"""
-    global ADMIN_CHAT_HISTORY
-    now_str = datetime.now().strftime("%Y年%m月%d日 %H:%M:%S")
-
-    system_prompt = f"""你是管理员的专属全天候智能管家助理（贴心、敏锐、具备多种系统管理工具）。
-当前系统时间基准：{now_str}。
-
-【核心行为准则】：
-1. 【真实工具执行，严禁空口臆测】：
-   - 你拥有管理 Microsoft To Do 待办清单与查阅通知群消息的各项真实工具。
-   - 涉及查看待办、检查重复、删除待办、修改待办、新增待办，或查看群最新动态，必须首先调用相应的真实工具！
-   - 严禁凭空编造待办列表或虚构执行结果。
-2. 【表达自由自然，彻底摒弃死板模板】：
-   - 不要使用任何刻板僵化的固定套话。根据对话场景，以贴身私人秘书的口吻，用流畅清晰、自然得体的人类语言回答。
-3. 【纯文本排版】：
-   - QQ 不支持 Markdown 富文本渲染，严禁输出任何加粗（**）、标题（#）、行内反引号（`）或代码块。请使用纯文本配合 emoji 或清晰标点排版。"""
-
-    messages = [{"role": "system", "content": system_prompt}]
-    for turn in ADMIN_CHAT_HISTORY[-10:]:
-        messages.append(turn)
-    messages.append({"role": "user", "content": user_text})
-
-    if config.AI_PROVIDER in ("openai", "deepseek", "default"):
-        # Standard OpenAI format with function calling
-        for _ in range(3):
-            base_url = config.LLM_BASE_URL.rstrip("/")
-            url = f"{base_url}/chat/completions" if not base_url.endswith("/chat/completions") else base_url
-            payload = {
-                "model": config.LLM_MODEL,
-                "messages": messages,
-                "tools": AGENT_TOOLS,
-                "temperature": config.LLM_TEMPERATURE
-            }
-            headers = {"Content-Type": "application/json"}
-            if config.LLM_API_KEY:
-                headers["Authorization"] = f"Bearer {config.LLM_API_KEY}"
-            
-            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-            try:
-                with urllib.request.urlopen(req, timeout=40) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    assistant_msg = data["choices"][0]["message"]
-            except Exception as e:
-                logger.error(f"智能体交互异常: {e}")
-                return "处理时遇到了一点网络波动，请稍后再试一下。"
-
-            tool_calls = assistant_msg.get("tool_calls")
-            if not tool_calls:
-                final_content = assistant_msg.get("content", "")
-                cleaned_reply = clean_qq_markdown(strip_tool_leak(final_content))
-                ADMIN_CHAT_HISTORY.append({"role": "user", "content": user_text})
-                ADMIN_CHAT_HISTORY.append({"role": "assistant", "content": cleaned_reply})
-                if len(ADMIN_CHAT_HISTORY) > 20:
-                    ADMIN_CHAT_HISTORY = ADMIN_CHAT_HISTORY[-20:]
-                return cleaned_reply
-
-            messages.append(assistant_msg)
-            for tc in tool_calls:
-                call_id = tc.get("id")
-                fn_name = tc.get("function", {}).get("name")
-                try:
-                    fn_args = json.loads(tc.get("function", {}).get("arguments", "{}"))
-                except Exception:
-                    fn_args = {}
-                tool_output = execute_agent_tool(fn_name, fn_args)
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": call_id,
-                    "name": fn_name,
-                    "content": tool_output
-                })
-        return "已为您执行了相关操作，请告诉我是否还需要进一步调整。"
-
+    """Run the shared, persistent task and knowledge agent for the administrator."""
     try:
-        reply = ai_provider.call_agent(messages, AGENT_TOOLS, execute_agent_tool)
+        reply = CHANNEL_AGENT.run("qq", config.ADMIN_QQ, user_text)
+        return clean_qq_markdown(strip_tool_leak(reply))
     except Exception as exc:
-        logger.error(f"CLI 智能体交互异常: {exc}")
-        return "处理时遇到了一点波动，请确认 CLI 已安装并完成登录后再试。"
-    cleaned = clean_qq_markdown(strip_tool_leak(reply))
-    ADMIN_CHAT_HISTORY.append({"role": "user", "content": user_text})
-    ADMIN_CHAT_HISTORY.append({"role": "assistant", "content": cleaned})
-    return cleaned
+        logger.error("统一智能体交互失败: %s", type(exc).__name__)
+        return "处理请求失败，操作没有被报告为成功；请稍后重试或检查运行面板。"
 
 def generate_natural_notice_report(action_type: str, item_info: dict, raw_group_msg: str) -> str:
     action_desc = "【更新/修正了已有待办】" if action_type == "updated" else "【新增了待办事项】"
@@ -330,49 +263,150 @@ def generate_natural_notice_report(action_type: str, item_info: dict, raw_group_
     res = ai_provider.call_ai(prompt, temperature=0.3)
     return clean_qq_markdown(strip_tool_leak(res))
 
+
+def process_queued_notice(queued_ids: int | list[int], text: str) -> None:
+    ids = [queued_ids] if isinstance(queued_ids, int) else queued_ids
+    primary_id = ids[0]
+    logger.info("处理已持久化的群通知批次 (count=%s)", len(ids))
+    eval_res = evaluate_notice_batch(
+        text,
+        TASK_SERVICE.db.list_tasks("open"),
+        DATABASE.get_preference("identity_profile", {}),
+    )
+    logger.info(
+        "群通知语义裁决完成: action=%s, tasks=%s",
+        eval_res.get("action"), len(eval_res.get("tasks", [])),
+    )
+    if eval_res.get("error"):
+        for queued_id in ids:
+            DATABASE.retry_message(
+                queued_id, "notice_analysis_failed",
+                (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat(timespec="seconds"),
+                config.MAX_MESSAGE_ATTEMPTS,
+            )
+        return
+    decision = eval_res.get("action", "ignore")
+    if decision in {"ignore", "duplicate"}:
+        for queued_id in ids:
+            DATABASE.finish_message(queued_id)
+        return
+    results = []
+    for task_info in eval_res.get("tasks", []):
+        if decision == "update" and task_info.get("task_id"):
+            changes = {
+                "title": task_info.get("what"),
+                "assignee": task_info.get("who"),
+                "original_time_text": task_info.get("when"),
+                "context": task_info.get("context"),
+                "relevance": task_info.get("relevance"),
+                "quadrant": task_info.get("quadrant"),
+            }
+            result = TASK_SERVICE.update(
+                str(task_info["task_id"]),
+                {key: value for key, value in changes.items() if value is not None},
+            )
+        else:
+            result = TASK_SERVICE.propose(primary_id, task_info)
+        results.append(result)
+        if result.get("success"):
+            state = result.get("state")
+            if state in {"created", "updated", "recovered"}:
+                try:
+                    notice_msg = generate_natural_notice_report(state, task_info, text)
+                except Exception:
+                    notice_msg = "待办已按实际执行结果完成同步，请在任务列表中查看详情。"
+            elif state == "needs_confirmation":
+                notice_msg = "检测到一条信息不完整的候选事项，已放入待确认收件箱。"
+            else:
+                continue
+            send_private_msg(config.ADMIN_QQ, notice_msg)
+    if results and all(result.get("success") for result in results):
+        for queued_id in ids:
+            DATABASE.finish_message(queued_id)
+    elif not results:
+        for queued_id in ids:
+            DATABASE.finish_message(queued_id)
+    else:
+        for queued_id in ids:
+            DATABASE.retry_message(
+                queued_id, "one_or_more_task_operations_failed",
+                (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat(timespec="seconds"),
+                config.MAX_MESSAGE_ATTEMPTS,
+            )
+        send_private_msg(config.ADMIN_QQ, "待办同步失败，系统稍后会重试；本次未报告为成功。")
+
 def process_message(user_id: int, group_id: int, raw_text: str, is_group: bool, message_id: int, sender_name: str = ""):
     text = raw_text.strip()
 
     # 1. 目标群消息处理：语义查重、修正合并与动态提醒
     if is_group and group_id in config.TARGET_GROUP_IDS:
+        queued_id, inserted = DATABASE.enqueue_message(
+            channel="qq",
+            external_id=str(message_id),
+            conversation_id=group_id,
+            sender_id=user_id,
+            body=text,
+        )
+        if not inserted:
+            logger.info("QQ 消息已入队或已处理: %s", message_id)
+            return
         last_seen = last_seen_message_ids.get(group_id, 0)
         if message_id > last_seen:
             last_seen_message_ids[group_id] = message_id
 
-        if text:
-            save_group_message({"message_id": message_id, "group_id": group_id, "sender": sender_name or str(user_id), "text": text})
-
-        logger.info(f"目标群 [{group_id}] 收到新消息，交由 AI 语义分析: {text[:40]}...")
-        current_todos = get_all_active_tasks()
-        eval_res = evaluate_notice_against_existing_todos(text, current_todos)
-        logger.info(f"群通知语义裁决结果: {eval_res}")
-
-        decision = eval_res.get("decision", "ignore")
-        if decision in ["ignore", "duplicate"]:
-            logger.info(f"群消息裁决为 {decision}，静默跳过。")
-            return
-
-        if decision in ["update", "new"]:
-            sync_res = apply_notice_evaluation(eval_res)
-            action_taken = sync_res.get("action_taken")
-            if action_taken in ["created", "updated"]:
-                task_info = eval_res.get("task", {})
-                notice_msg = generate_natural_notice_report(action_taken, task_info, text)
-                send_private_msg(config.ADMIN_QQ, notice_msg)
-                logger.info(f"群待办 {action_taken} 已由 AI 自主组织语言汇报管理员。")
+        logger.info("QQ 消息已进入碎片合并窗口 (message_id=%s)", message_id)
         return
 
     # 2. 管理员私聊消息处理：ReAct 智能体多轮闭环
     if not is_group and user_id == config.ADMIN_QQ:
-        logger.info(f"收到管理员私聊消息: '{text}'，进入智能体处理...")
+        logger.info("收到管理员私聊消息，进入智能体处理 (message_id=%s)", message_id)
         reply = run_admin_agent(text)
         send_private_msg(config.ADMIN_QQ, reply)
 
 async def periodic_check_task():
     logger.info("QQ 适配器：30 分钟定时断流防漏巡检任务已启动...")
+    last_history_check = 0.0
     while True:
         try:
-            await asyncio.sleep(1800)
+            pending_rows = DATABASE.claim_messages(limit=50, channel="qq")
+            batches: dict[str, list[dict]] = {}
+            for pending in pending_rows:
+                batches.setdefault(pending["conversation_key"], []).append(pending)
+            for batch in batches.values():
+                combined = "\n".join(row["body"] for row in batch if row["body"].strip())
+                batch_ids = [int(row["id"]) for row in batch]
+                try:
+                    await asyncio.to_thread(process_queued_notice, batch_ids, combined)
+                except Exception as exc:
+                    retry_at = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat(timespec="seconds")
+                    for queued_id in batch_ids:
+                        DATABASE.retry_message(
+                            queued_id, type(exc).__name__, retry_at, config.MAX_MESSAGE_ATTEMPTS
+                        )
+                    logger.error("通知批次处理失败，将重试: %s", type(exc).__name__)
+            for notification in DATABASE.claim_notifications():
+                payload = notification["payload"]
+                if notification["kind"] == "daily_digest":
+                    text = (
+                        f"今日任务 {len(payload.get('today', []))} 项，"
+                        f"未来三天 {len(payload.get('soon', []))} 项，"
+                        f"逾期 {len(payload.get('overdue', []))} 项。"
+                    )
+                elif notification["kind"] == "weekly_review":
+                    text = (
+                        f"本周完成 {len(payload.get('completed', []))} 项，"
+                        f"仍有 {len(payload.get('remaining', []))} 项待处理。"
+                    )
+                else:
+                    text = f"有 {len(payload.get('tasks', []))} 项任务临近截止，请及时查看。"
+                result = call_napcat_api("send_private_msg", {"user_id": config.ADMIN_QQ, "message": text})
+                delivered = result.get("status") == "ok" or result.get("retcode") == 0
+                DATABASE.finish_notification(notification["id"], delivered)
+            now = asyncio.get_running_loop().time()
+            if now - last_history_check < 1800:
+                await asyncio.sleep(max(1, config.MESSAGE_BATCH_WINDOW_SECONDS))
+                continue
+            last_history_check = now
             if not config.TARGET_GROUP_IDS:
                 continue
             for gid in config.TARGET_GROUP_IDS:
@@ -392,33 +426,26 @@ async def periodic_check_task():
                     continue
                 last_seen_message_ids[gid] = current_max_id
 
-                new_lines = []
                 for m in new_messages:
                     c = m.get("raw_message", "").strip()
                     s = m.get("sender", {}).get("card") or m.get("sender", {}).get("nickname") or m.get("user_id")
                     if c:
-                        new_lines.append(f"{s}: {c}")
-                if not new_lines:
-                    continue
-
-                combined = "\n".join(new_lines)
-                current_todos = get_all_active_tasks()
-                eval_res = evaluate_notice_against_existing_todos(combined, current_todos)
-                decision = eval_res.get("decision", "ignore")
-                if decision in ["update", "new"]:
-                    sync_res = apply_notice_evaluation(eval_res)
-                    action_taken = sync_res.get("action_taken")
-                    if action_taken in ["created", "updated"]:
-                        task_info = eval_res.get("task", {})
-                        notice_msg = generate_natural_notice_report(action_taken, task_info, combined)
-                        send_private_msg(config.ADMIN_QQ, notice_msg)
-        except Exception as e:
-            logger.error(f"QQ 适配器定时巡检异常: {e}")
+                        await asyncio.to_thread(
+                            process_message,
+                            m.get("user_id", 0),
+                            gid,
+                            c,
+                            True,
+                            m.get("message_id", 0),
+                            str(s),
+                        )
+        except Exception as exc:
+            logger.error("QQ 适配器定时巡检异常: %s", type(exc).__name__)
 
 async def ws_listener():
     import websockets
     ws_url = f"{config.NAPCAT_WS_URL}?access_token={config.NAPCAT_TOKEN}" if config.NAPCAT_TOKEN else config.NAPCAT_WS_URL
-    logger.info(f"正在连接 NapCat WebSocket 服务: {ws_url}")
+    logger.info("正在连接已配置的 NapCat WebSocket 服务")
 
     while True:
         try:
@@ -448,11 +475,11 @@ async def ws_listener():
                                 sender_name
                             )
                         )
-        except (websockets.ConnectionClosed, OSError) as e:
-            logger.warning(f"QQ 适配器 WebSocket 断开连接 ({e})，5 秒后尝试重连...")
+        except (websockets.ConnectionClosed, OSError):
+            logger.warning("QQ 适配器 WebSocket 断开连接，5 秒后尝试重连...")
             await asyncio.sleep(5)
-        except Exception as e:
-            logger.error(f"QQ 适配器发生未捕获异常: {e}")
+        except Exception as exc:
+            logger.error("QQ 适配器发生未捕获异常: %s", type(exc).__name__)
             await asyncio.sleep(5)
 
 async def run_qq_adapter():
@@ -462,9 +489,9 @@ async def run_qq_adapter():
         return
 
     logger.info("🚀 QQ 通道适配器正在启动...")
-    logger.info(f"管理员 QQ: {config.ADMIN_QQ}")
-    logger.info(f"监听群组: {config.TARGET_GROUP_IDS}")
-    logger.info(f"NapCat API: {config.NAPCAT_HTTP_URL}")
+    logger.info("管理员账号已配置: %s", bool(config.ADMIN_QQ))
+    logger.info("监听群组数量: %s", len(config.TARGET_GROUP_IDS))
+    logger.info("NapCat API 已配置: %s", bool(config.NAPCAT_HTTP_URL))
 
     await asyncio.gather(
         ws_listener(),
