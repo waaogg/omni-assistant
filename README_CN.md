@@ -1,191 +1,180 @@
-# 🌐 Omni-Assistant (全渠道个人智能助理)
+# Omni-Assistant
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Python-3.10%2B-blue?logo=python" alt="Python" />
-  <img src="https://img.shields.io/badge/Node.js-18%2B-green?logo=node.js" alt="Node.js" />
-  <img src="https://img.shields.io/badge/Default_LLM-DeepSeek-blueviolet" alt="DeepSeek" />
-  <img src="https://img.shields.io/badge/Channels-QQ%20%7C%20WeChat-orange" alt="Channels" />
-  <img src="https://img.shields.io/badge/Sync-Microsoft%20To%20Do-0078D4?logo=microsoft" alt="Microsoft To Do" />
-  <img src="https://img.shields.io/badge/License-MIT-purple" alt="License" />
-</p>
+[English](README.md) | **简体中文**
 
-> **Omni-Assistant** 是一款专为个人打造的开源全渠道智能中控管家。  
-> 深度融合 **QQ（NapCat OneBot v11）** 与 **微信（腾讯官方 iLink 机器人协议）** 双渠道，底层通过任意 **OpenAI 兼容接口**（DeepSeek、OpenAI、Ollama、vLLM 或兼容网关）驱动，联动 **Microsoft To Do** 实现日程提取、语义防重、起止时间完整性管理与原生系统强提醒。
+一个自托管的 QQ / 微信消息助手。它把通知先放进本地收件箱，再按规则提取任务、处理时间、同步到 Microsoft To Do（可选），并保留每一步的来源和修改记录。
 
----
+它不试图替人做决定：日期、对象或任务相关性不明确时，项目会把内容放进确认箱，等你确认后再创建任务。
 
-## 🌟 核心特性
+## 适合什么场景
 
-- **可靠任务收件箱**：消息先持久化再分析，按通道消息 ID 去重；碎片消息合并后可拆成多个任务，信息不足时进入待确认收件箱。
-- **统一任务与会话**：QQ、微信和管理面板共享 SQLite 任务、来源、变更历史、偏好与身份绑定；删除必须通过独立确认命令。
-- **个人助理功能**：提供每日简报、每周复盘、临期跟进、资料全文检索、四象限视图、周期课表、例外日期与冲突检查。
-- **真实多媒体输入**：HTTP 模型接收图片内容和受限文本附件；本地 CLI 仅访问配置的工作目录，并保留大小与超时限制。
-- **安全迁移与恢复**：旧 JSON 可预览后导入，运行状态可使用 scrypt + AES-GCM 加密备份；生产凭据和个人数据不进入源码仓库。
+- 在 QQ 群里静默收集通知，私聊提醒管理员
+- 用微信私聊输入任务、查询任务，或发送包含图片、文本附件的消息
+- 把确定的任务同步到 Microsoft To Do
+- 在本机查看任务、确认箱、未来两周日程和服务状态
+- 把运行数据留在自己的机器上，而不是交给项目仓库
 
-详细设计及操作说明见 `docs/ARCHITECTURE.md`、`docs/MIGRATION.md`、`docs/SECURITY.md` 和 `docs/OPERATIONS.md`。
+如果你只需要一个聊天机器人，这个项目偏重了；它的重点是消息落库、去重、确认、任务变更记录和可恢复性。
 
-### 1. 🎛️ 通道按需选配启动（零强制依赖）
-- **完全解耦**：QQ 与微信通道各自独立，通过 `.env` 中的 `ENABLE_QQ` 与 `ENABLE_WECHAT` 独立开关。
-- **无感静默**：未配置或设为 `false` 的通道不会加载模块、不发起网络连接、不报错、不要求任何前置依赖。
-- **灵活组合**：支持“仅 QQ”、“仅微信”或“QQ + 微信双通道并发运行”。
+## 它如何工作
 
-### 2. 🧠 可插拔 AI 中控调度（默认 DeepSeek）
-- **开箱即用**：默认预设接入 **DeepSeek 官方 API (`https://api.deepseek.com/v1`)** 与 `deepseek-chat` 模型，仅需填入 API Key 即可启动。
-- **标准兼容**：全面兼容任何符合 OpenAI API 规范的端点（如 OpenAI、Moonshot、通义千问、SiliconFlow、本地 Ollama/vLLM 等）。
-- **可选本地 CLI**：支持 `AI_PROVIDER=agy|codex|opencode|claude`。设置 `AUTO_INSTALL_CLI=true` 后，启动时会自动安装已核实的 npm CLI；`agy` 因发行包依环境而异，需显式提供 `AGY_INSTALL_COMMAND`。
-- **工具兼容**：QQ 保留原生 OpenAI 工具调用；本地 CLI 使用统一 JSON 工具协议（`tool_call` / `final`），执行同一套本地工具。
-
-### 3. 📅 微软待办原生嵌入与提前 15 分钟闹钟 (Microsoft To Do)
-- **语义级防重与动态修正**：捕捉群通知时携带现有未完成待办，由大模型裁决是闲聊 (`ignore`)、重复 (`duplicate`)、修正现有事项 (`update`) 还是全新待办 (`new`)。
-- **起止时间完整性**：自动提取开始时间与结束时间（如 `2026年9月15日 14:00 - 16:00`），杜绝时间断章。
-- **系统级原生弹窗**：自动转化为 ISO 8601 时间戳，默认提前 15 分钟触发手机/PC/Apple Watch 原生闹钟。
-- **购物与快递合并**：买东西/寄快递类待办自动原地合并追加，不设响铃。
-
-### 4. 💬 渠道专属原生体验
-- **微信端（Node.js iLink 适配器）**：
-  - 直连腾讯官方 iLink 通道，免网页版微信封号风险；
-  - 自动 AES-128-ECB 解密接收图片、视频与各格式文档，内置 50MB 超限熔断与封面降级保护；
-  - 支持微信引用历史消息解析。
-- **QQ 端（Python OneBot 适配器）**：
-  - 私聊专属 ReAct 闭环智能体，拥有真实查待办、增待办、改待办、删待办工具；
-  - 严格群内静默，提取的通知以私人管家口吻单向私聊汇报；
-  - 纯净排版过滤器，彻底过滤加粗、反引号等导致 QQ 视觉混乱的 Markdown 标记。
-
----
-
-## 🏛️ 系统架构
-
-```mermaid
-flowchart TD
-    subgraph Channels ["消息接入层 (可选择性单独启用)"]
-        QQ["QQ 平台 (NapCat OneBot v11)"]
-        WX["微信官方平台 (iLink Protocol)"]
-    end
-
-    subgraph Adapters ["协议适配层"]
-        QA["QQ 适配器 (Python)"]
-        WA["微信适配器 (Node.js)"]
-    end
-
-    subgraph Orchestrator ["中控编排层 (main.py)"]
-        CFG["统一配置中心 (.env)"]
-        SW["通道状态控制器 (ENABLE_QQ / ENABLE_WECHAT)"]
-    end
-
-    subgraph Brain ["统一大脑调度层 (Core AI Provider)"]
-        DS["DeepSeek 官方 API (默认)"]
-        OAI["标准 OpenAI 兼容接口"]
-    end
-
-    subgraph Integration ["生态闭环联动"]
-        TODO["Microsoft To Do (Graph API / 原生闹钟)"]
-        MEM["本地永久记忆库 (synced_todos.json)"]
-    end
-
-    QQ --> QA
-    WX --> WA
-    CFG --> SW
-    SW --> QA
-    SW --> WA
-    QA --> Brain
-    WA --> Brain
-    Brain --> DS
-    Brain --> OAI
-    Brain --> Integration
+```text
+QQ / 微信 / Dashboard
+          │
+          ▼
+    消息入库、去重、重试
+          │
+          ▼
+   结构化判断与时间解析
+       │              │
+       ▼              ▼
+   确定的任务       确认箱
+       │
+       ▼
+SQLite 任务历史 ──── Microsoft To Do（可选）
 ```
 
----
+SQLite 是本地状态的唯一来源。渠道标识会先哈希；消息、任务、偏好和文档内容只存在运行目录中的数据库，不应提交到 Git。
 
-## 🚀 快速开始
+## 先跑起来
 
-### 1. 获取项目代码
+需要 Python 3.10+、Node.js 18+。只有启用微信或使用 Node 侧功能时才需要安装 npm 依赖。
+
 ```bash
-git clone https://github.com/your-username/omni-assistant.git
+git clone https://github.com/waaogg/omni-assistant.git
 cd omni-assistant
-```
+python -m pip install -r requirements.txt
+npm install
 
-### 2. 环境安装
-- **Python 环境** (Python 3.10+):
-  ```bash
-  pip install -r requirements.txt
-  # 运行测试时再安装
-  pip install -r requirements-dev.txt
-  ```
-- **Node.js 环境** (Node.js 18+，若启用微信或 To Do 模块):
-  ```bash
-  npm install
-  ```
+# 开发或运行测试时
+python -m pip install -r requirements-dev.txt
 
-### 3. 配置环境变量
-复制模板生成 `.env` 文件：
-```bash
+# 从模板创建自己的配置
 cp .env.example .env
 ```
 
-打开 `.env` 填入配置（**未启用的通道无需填写**）：
-```bash
-# 1. 开启你需要的通道
-ENABLE_QQ=true
+最小配置示例：先只打开一个通道。
+
+```dotenv
+ENABLE_QQ=false
 ENABLE_WECHAT=true
 
-# 2. 配置 AI 大模型或本地 CLI
 AI_PROVIDER=openai
-AUTO_INSTALL_CLI=false
 LLM_BASE_URL=https://api.deepseek.com/v1
-LLM_API_KEY=sk-your-deepseek-api-key
+LLM_API_KEY=填入你自己的密钥
 LLM_MODEL=deepseek-chat
+```
 
-# 3. 若启用 QQ (ENABLE_QQ=true)
-ADMIN_QQ=你的QQ号
-TARGET_GROUP_IDS=你要监听的群号
+先检查配置，再启动：
+
+```bash
+python main.py --check-only
+python main.py
+```
+
+`--check-only` 不连接 QQ、微信或 Microsoft To Do；它只检查配置格式和本机依赖。完整配置项见 [`.env.example`](.env.example)。
+
+## 接入渠道
+
+### QQ
+
+QQ 使用 NapCat 的 OneBot v11 HTTP 与 WebSocket 接口。启用后，适配器只监听 `TARGET_GROUP_IDS` 中的群，不在这些群里发言；识别到的内容会通过私聊发给 `ADMIN_QQ`。
+
+```dotenv
+ENABLE_QQ=true
+ADMIN_QQ=你的 QQ 号
+TARGET_GROUP_IDS=群号1,群号2
 NAPCAT_HTTP_URL=http://127.0.0.1:3000
-
-# 4. 若启用微信 (ENABLE_WECHAT=true)
-# 首次运行终端会输出登录二维码，微信扫码即可自动完成绑定
+NAPCAT_WS_URL=ws://127.0.0.1:3001
+NAPCAT_TOKEN=
 ```
 
-### 4. 验证配置
-```bash
-python3 main.py --check-only
+### 微信
+
+微信适配器使用腾讯 iLink 网关。首次启动需要在终端完成扫码登录；登录状态保存在 `WECHAT_DATA_DIR`，默认是 `data/wechat`，不要把这个目录提交或打包分享。
+
+```dotenv
+ENABLE_WECHAT=true
+WECHAT_BASE_URL=https://ilinkai.weixin.qq.com
+WECHAT_DATA_DIR=./data/wechat
 ```
 
-配置自检发现非法通道、URL、数字或 AI 驱动配置时会以退出码 `2` 失败，便于
-容器和 systemd 快速阻断错误部署。待办、群历史和微信会话状态均采用原子替换
-写入，进程中断时不会留下半截 JSON 文件。
+可以用 `ALLOWED_WECHAT_USER_IDS` 限制允许发送消息的微信用户；不设置时，适配器只接受网关绑定的用户。
 
-### 5. 启动服务
-```bash
-python3 main.py
+## 任务与确认机制
+
+- 同一渠道消息会按外部消息 ID 去重；处理失败会按配置重试。
+- 一条通知中有多个独立事项时，会分别生成候选任务。
+- `AUTO_APPLY_CONFIDENCE` 以上且对象、时间明确的任务可以自动落库；其他任务进入确认箱。
+- 删除任务要求明确确认；任务更新、完成、延期会写入历史，可撤销。
+- 到期时间、提醒、周期日程和日程冲突由本地规则处理。无法确定年份或日期时，不会凭空补全。
+
+Microsoft To Do 是可选的远端镜像，不是本地数据库的替代品。远端写入失败时，系统不会假装任务已经创建成功。
+
+```dotenv
+ENABLE_MS_TODO=true
+MS_TODO_AUTH_MODULE_PATH=/path/to/auth.js
+MS_TODO_DEFAULT_LIST_ID=
+DEFAULT_REMINDER_ADVANCE_MINUTES=15
 ```
 
----
+## Dashboard
 
-## 🛡️ 安全与隐私声明 (Security & Zero-Leakage)
-
-1. **绝对脱敏**：本项目源码、提交历史与默认配置模板中绝不含任何开发者的个人 QQ 号、微信号、群号、姓名、Token 或密钥。
-2. **本地数据隔离**：`.gitignore` 深度配置，所有本地会话缓存（`auth.json`、`conversations.json`、`sync_buf.txt`）、待办记忆（`synced_todos.json`）、聊天历史（`group_history.json`）及媒体解密文件均默认物理排除在版本控制之外。
-3. **安全自检命令**：
-   ```bash
-   python3 tests/test_desensitization.py
-   python3 tests/test_git_isolation.py
-   python3 -m pytest -q
-   ```
-
----
-
-## 📄 开源许可证
-本项目基于 [MIT License](LICENSE) 协议开源。
-## 图形化设置与运行面板
-
-启动本地 Dashboard：
+本地面板默认只监听 `127.0.0.1:8765`：
 
 ```bash
 python dashboard.py
 ```
 
-然后访问 `http://127.0.0.1:8765`。面板支持初始配置常用的 AI/QQ/微信/To Do
-选项、启动/重启/停止助手进程，并查看最近的监督进程输出。配置会原子写入
-`.env`，保存后需要重启服务才会生效；API Key 和 Token 只显示掩码。
+它能查看服务状态、任务、确认箱、近期日程和不含内容的 AI 调用指标，也能编辑受支持的配置项。若要通过反向代理暴露面板，先设置 `DASHBOARD_TOKEN`，再由代理提供 TLS 和访问控制；不要直接把本地面板暴露到公网。
 
-面板默认只监听本机。如需通过反向代理访问，请在环境中设置
-`DASHBOARD_HOST`、`DASHBOARD_PORT`，并配置 `DASHBOARD_TOKEN` 后再暴露到网络。
+## 数据、迁移与备份
+
+运行后，主要数据在 `data/omni.db`。该文件包含私有内容，应当和代码分开保存。
+
+从旧 JSON 状态迁移时，先预览数量：
+
+```bash
+python scripts/migrate_legacy.py --database data/omni.db \
+  --tasks /private/path/synced_todos.json \
+  --history /private/path/group_history.json --dry-run
+```
+
+确认后去掉 `--dry-run`。需要备份时，使用带认证加密的备份脚本：
+
+```bash
+python scripts/secure_backup.py create data/omni.db backups/state.omnibak
+python scripts/secure_backup.py restore backups/state.omnibak data/restored.db
+```
+
+备份密码来自 `OMNI_BACKUP_PASSWORD` 或交互输入，至少 12 个字符。恢复到新文件后，先执行 SQLite `PRAGMA integrity_check`，不要直接覆盖正在运行的数据库。
+
+## 日常运维
+
+```bash
+# 本地端到端检查（使用模拟远端，不会写入你的账号）
+python scripts/verify_e2e.py
+
+# 测试与语法检查
+python -m pytest -q
+python -m compileall -q core adapters dashboard scripts main.py
+node --check core/ai_provider.js
+node --check adapters/wechat/wechat_bot.js
+```
+
+部署样例在 `deploy/`：Docker Compose、systemd 和 PM2。它们是起点，不是可直接照抄的生产答案；部署前需要检查端口、运行账户、数据卷、备份位置和各渠道凭据。
+
+更多细节：
+
+- [架构说明](docs/ARCHITECTURE.md)
+- [运行与排障](docs/OPERATIONS.md)
+- [安全与隐私边界](docs/SECURITY.md)
+- [迁移说明](docs/MIGRATION.md)
+
+## 隐私边界
+
+仓库只放代码和中性示例，不应包含你的账号、群号、聊天内容、偏好、日程、二维码、会话文件、媒体、令牌或备份。`.env`、`data/omni.db` 和 `data/wechat/` 都应只留在你控制的环境中。
+
+## 许可证
+
+[MIT](LICENSE)
