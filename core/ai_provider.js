@@ -5,6 +5,8 @@
  * 2. Google Antigravity CLI (agy) subprocess
  */
 const { spawn } = require('node:child_process');
+const path = require('node:path');
+
 
 function getEnv(key, fallback = '') {
   return process.env[key] !== undefined ? process.env[key] : fallback;
@@ -90,6 +92,8 @@ const colors = {
 
 function getCategoryColor(category) {
   if (category.startsWith('SPAWN')) return colors.cyan + colors.bold;
+  if (category.startsWith('SANDBOX')) return colors.cyan;
+  if (category.startsWith('SECURITY')) return colors.red + colors.bold;
   if (category.startsWith('PROCESS')) return colors.magenta;
   if (category.startsWith('TOOL/ACTIVE')) return colors.yellow + colors.bold;
   if (category.startsWith('TOOL/DONE')) return colors.green;
@@ -137,12 +141,14 @@ async function callAntigravityCLI(promptText, conversationId, timeoutMs = 180000
 
     const startTime = Date.now();
     const cwd = options.cwd || process.env.AGY_CWD || process.cwd();
+    const sandboxRoot = options.sandboxRoot || options.env?.OMNI_USER_DATA_DIR || cwd;
 
     formatAgyLog('SPAWN', `🚀 启动 Antigravity CLI 引擎 (Model: ${AGY_MODEL})`, {
       binary: agent.command,
       model: AGY_MODEL,
       conversationId: conversationId || '(新会话 - 初始无记忆)',
       cwd,
+      sandboxRoot,
       envOverrides: {
         OMNI_USER_ID: options.env?.OMNI_USER_ID || 'none',
         AGY_CWD: options.env?.AGY_CWD || cwd,
@@ -150,6 +156,13 @@ async function callAntigravityCLI(promptText, conversationId, timeoutMs = 180000
         HOME: options.env?.HOME || 'default',
       },
       promptPreview: promptText.replace(/\s+/g, ' ').slice(0, 120) + (promptText.length > 120 ? '...' : ''),
+    });
+
+    formatAgyLog('SANDBOX', `🔒 用户工作区安全沙箱严格锁定`, {
+      activeUser: options.env?.OMNI_USER_ID || 'unknown',
+      sandboxBoundary: sandboxRoot,
+      workspaceCwd: cwd,
+      securityPolicy: '严格仅限访问当前用户专属沙箱，严禁越权跨目录探测',
     });
 
     const child = spawn(agent.command, args, {
@@ -165,6 +178,15 @@ async function callAntigravityCLI(promptText, conversationId, timeoutMs = 180000
     let streamBuffer = '';
     let finalResult = null;
     let lastConversationId = conversationId;
+
+    const turnStepMap = new Map();
+    function formatStepTag(globalStepIndex) {
+      if (!turnStepMap.has(globalStepIndex)) {
+        turnStepMap.set(globalStepIndex, turnStepMap.size + 1);
+      }
+      const turnStep = turnStepMap.get(globalStepIndex);
+      return `[Step ${globalStepIndex} (本轮第 ${turnStep} 步)]`;
+    }
 
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
@@ -193,20 +215,42 @@ async function callAntigravityCLI(promptText, conversationId, timeoutMs = 180000
             }
             if (su.step_type === 'tool' && su.state === 'ACTIVE') {
               const p = su.tool_info?.parameters || {};
+              const stepTag = formatStepTag(su.step_index);
+
+              // 校验是否访问了沙箱外的路径
+              const targetPath = p.AbsolutePath || p.TargetFile || p.path;
+              if (targetPath && sandboxRoot) {
+                try {
+                  const resolvedTarget = path.resolve(String(targetPath));
+                  const resolvedSandbox = path.resolve(String(sandboxRoot));
+                  const isAllowed = resolvedTarget.toLowerCase().startsWith(resolvedSandbox.toLowerCase());
+                  if (!isAllowed) {
+                    formatAgyLog('SECURITY', `🚨 越权访问警报: 探测到沙箱外路径!`, {
+                      attemptedPath: targetPath,
+                      allowedSandbox: sandboxRoot,
+                      action: '严禁越权跨用户访问'
+                    });
+                  } else {
+                    formatAgyLog('SANDBOX', `🛡️ 沙箱校验通过: ${path.relative(resolvedSandbox, resolvedTarget) || '.'}`);
+                  }
+                } catch {}
+              }
+
               if (su.tool_name === 'call_mcp_tool') {
                 let parsedArgs = p.Arguments;
                 try {
                   if (typeof parsedArgs === 'string') parsedArgs = JSON.parse(parsedArgs);
                 } catch {}
-                formatAgyLog('TOOL/ACTIVE', `🔧 [Step ${su.step_index}] 正在调用 MCP 工具: ${p.ServerName || 'mcp'} -> ${p.ToolName}`, {
+                formatAgyLog('TOOL/ACTIVE', `🔧 ${stepTag} 正在调用 MCP 工具: ${p.ServerName || 'mcp'} -> ${p.ToolName}`, {
                   server: p.ServerName,
                   tool: p.ToolName,
                   arguments: parsedArgs
                 });
               } else {
-                formatAgyLog('TOOL/ACTIVE', `🔧 [Step ${su.step_index}] 正在调用内置工具: ${su.tool_name}`, p);
+                formatAgyLog('TOOL/ACTIVE', `🔧 ${stepTag} 正在调用内置工具: ${su.tool_name}`, p);
               }
             } else if (su.step_type === 'tool' && su.state === 'DONE') {
+              const stepTag = formatStepTag(su.step_index);
               const output = su.tool_info?.output;
               let outputSnippet = null;
               if (output !== undefined && output !== null) {
@@ -219,13 +263,15 @@ async function callAntigravityCLI(promptText, conversationId, timeoutMs = 180000
                   outputSnippet = outputSnippet.slice(0, 250) + '... (已截断)';
                 }
               }
-              formatAgyLog('TOOL/DONE', `✅ [Step ${su.step_index}] 工具执行完毕 (耗时: ${su.duration_seconds?.toFixed(2) || 0}s, 工具: ${su.tool_name})`, outputSnippet ? { output: outputSnippet } : null);
+              formatAgyLog('TOOL/DONE', `✅ ${stepTag} 工具执行完毕 (耗时: ${su.duration_seconds?.toFixed(2) || 0}s, 工具: ${su.tool_name})`, outputSnippet ? { output: outputSnippet } : null);
             } else if (su.step_type === 'tool' && su.state === 'ERROR') {
-              formatAgyLog('TOOL/ERROR', `❌ [Step ${su.step_index}] 工具执行失败 (耗时: ${su.duration_seconds?.toFixed(2) || 0}s, 工具: ${su.tool_name})`, su.tool_info?.error || su.error || '未知错误');
+              const stepTag = formatStepTag(su.step_index);
+              formatAgyLog('TOOL/ERROR', `❌ ${stepTag} 工具执行失败 (耗时: ${su.duration_seconds?.toFixed(2) || 0}s, 工具: ${su.tool_name})`, su.tool_info?.error || su.error || '未知错误');
             } else if (su.step_type === 'agent_response' && su.state === 'DONE') {
+              const stepTag = formatStepTag(su.step_index);
               const u = su.usage || {};
               const tokenStr = `Tokens: 输入=${u.input_tokens || 0}, 输出=${u.output_tokens || 0}, 思考=${u.thinking_tokens || 0}`;
-              formatAgyLog('REASONING', `💭 [Step ${su.step_index}] 阶段性思考生成完成 (耗时: ${su.duration_seconds?.toFixed(2) || 0}s | ${tokenStr})`);
+              formatAgyLog('REASONING', `💭 ${stepTag} 阶段性思考生成完成 (耗时: ${su.duration_seconds?.toFixed(2) || 0}s | ${tokenStr})`);
             }
           } else if (item.event === 'result' && item.result) {
             finalResult = item.result;

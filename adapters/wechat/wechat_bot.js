@@ -1074,7 +1074,8 @@ async function runDaemon() {
 
         try {
           const timeHeader = `[当前北京时间: ${getNowGmt8Str()}]\n`;
-          const finalPrompt = timeHeader + promptForAI;
+          const sandboxHeader = `[安全隔离与工作区规范]:\n- 交互用户: ${fromUser}\n- 用户专属沙箱根目录: ${user.paths.root}\n- 用户专属工作区: ${user.paths.workspace}\n- 权限铁律: 你的文件操作与探测权限严格限制在当前用户的专属目录内。严禁探测宿主机代码、系统文件或其他用户数据，坚决杜绝越权访问！\n`;
+          const finalPrompt = timeHeader + sandboxHeader + '\n' + promptForAI;
           const convId = loadConversation(user.paths.conversationFile) || user.conversationId;
           log(`⚙️ 正在调度 AI (${AI_PROVIDER}) 推理执行: 用户=${fromUser}, 思考链模式=${user.thinkMode ? '开启' : '关闭'}, 会话ID=${convId || '(首轮)'}`);
 
@@ -1092,6 +1093,7 @@ async function runDaemon() {
 
           const result = await executeAI(finalPrompt, convId, null, {
             cwd: user.paths.workspace,
+            sandboxRoot: user.paths.root,
             onProgress,
             env: {
               OMNI_USER_ID: fromUser,
