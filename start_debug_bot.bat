@@ -3,7 +3,12 @@ chcp 65001 >nul
 title Omni-Assistant WeChat Bot [DEBUG MODE]
 color 0B
 
-cd /d "%~dp0"
+:: Ensure working directory is set to the project root
+if exist "%~dp0adapters\wechat\wechat_bot.js" (
+    cd /d "%~dp0"
+) else (
+    cd /d "C:\Users\WaaoGG\Documents\Default Project\todo-sync\omni-assistant"
+)
 
 :run_loop
 cls
@@ -20,17 +25,19 @@ echo.
 echo [Step 1/3] Terminating conflicting background bot instances...
 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*adapters/wechat/wechat_bot.js*' -and $_.ProcessId -ne $PID } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 
-echo [Step 2/3] Checking environment & auth...
+echo [Step 2/3] Checking environment and auth...
 if exist "data\wechat\auth_pool.json" (
-    echo   - WeChat Auth: Multi-account pool active (data\wechat\auth_pool.json)
-) else if exist "data\wechat\auth.json" (
-    echo   - WeChat Auth: Found existing login session (data\wechat\auth.json)
+    echo   - WeChat Auth: Multi-account pool active [data\wechat\auth_pool.json]
 ) else (
-    echo   - WeChat Auth: No session found. QR code login will be generated.
+    if exist "data\wechat\auth.json" (
+        echo   - WeChat Auth: Found existing login session [data\wechat\auth.json]
+    ) else (
+        echo   - WeChat Auth: No session found. QR code login will be generated.
+    )
 )
-echo   - Web Portal:  http://localhost:3000 (Open to scan QR code anytime)
+echo   - Web Portal:  http://localhost:3000 [Open to scan QR code anytime]
 if exist ".env" (
-    echo   - Environment: Found configuration (.env)
+    echo   - Environment: Found configuration [.env]
 ) else (
     echo   - Environment: WARNING: .env file missing!
 )
