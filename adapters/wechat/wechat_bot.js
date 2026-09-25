@@ -29,10 +29,78 @@ if (fs.existsSync(rootEnvPath)) {
   } catch {}
 }
 
-function log(msg) {
-  const ts = new Date().toLocaleTimeString('zh-CN', { hour12: false });
-  console.log(`[${ts}] [WeChat] ${msg}`);
+const colors = {
+  reset: '\x1b[0m',
+  bold: '\x1b[1m',
+  dim: '\x1b[2m',
+  cyan: '\x1b[36m',
+  yellow: '\x1b[33m',
+  green: '\x1b[32m',
+  red: '\x1b[31m',
+  magenta: '\x1b[35m',
+  blue: '\x1b[34m',
+  gray: '\x1b[90m',
+};
+
+function formatTs() {
+  return new Date().toLocaleTimeString('zh-CN', { hour12: false });
 }
+
+function printDetails(details) {
+  if (details === null || details === undefined) return;
+  if (typeof details === 'object') {
+    try {
+      const text = JSON.stringify(details, null, 2);
+      console.log(text.split('\n').map((l) => `           ${colors.dim}${l}${colors.reset}`).join('\n'));
+    } catch {
+      console.log(`           ${details}`);
+    }
+  } else {
+    console.log(`           ${details}`);
+  }
+}
+
+function log(msg, details = null) {
+  console.log(`[${formatTs()}] ${colors.cyan}[WeChat]${colors.reset} ${msg}`);
+  if (details) printDetails(details);
+}
+
+function logRecv(msg, details = null) {
+  console.log(`[${formatTs()}] ${colors.yellow}${colors.bold}[WECHAT/RECV]${colors.reset} ${msg}`);
+  if (details) printDetails(details);
+}
+
+function logSend(msg, details = null) {
+  console.log(`[${formatTs()}] ${colors.green}${colors.bold}[WECHAT/SEND]${colors.reset} ${msg}`);
+  if (details) printDetails(details);
+}
+
+function logNet(method, endpoint, status, latencyMs, summary = '') {
+  const isOk = status === 200 || status === '200' || status === 0;
+  const col = isOk ? colors.gray : colors.red;
+  console.log(`[${formatTs()}] ${col}[WECHAT/NET]${colors.reset} ${method} ${endpoint} (Status: ${status}, ${latencyMs}ms) ${summary}`);
+}
+
+function logError(cat, msg, err = null) {
+  console.error(`[${formatTs()}] ${colors.red}${colors.bold}[WECHAT/${cat}]${colors.reset} ${msg}`);
+  if (err) {
+    if (err.stack) {
+      console.error(err.stack.split('\n').map(l => `           ${colors.red}${l}${colors.reset}`).join('\n'));
+    } else {
+      console.error(`           ${colors.red}${err}${colors.reset}`);
+    }
+  }
+}
+
+// Global process crash guard
+process.on('uncaughtException', (err) => {
+  logError('CRASH_PREVENTED', `🚨 未捕获全局异常 (uncaughtException): ${err.message}`, err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logError('CRASH_PREVENTED', `🚨 未处理 Promise 拒绝 (unhandledRejection): ${reason?.message || reason}`, reason);
+});
+
 
 // 1. Channel Enable Check
 const enableWechat = (process.env.ENABLE_WECHAT || 'false').toLowerCase().trim();
@@ -127,6 +195,7 @@ async function apiPost(baseUrl, endpoint, body, token, timeoutMs = 35000) {
   const url = `${baseUrl.replace(/\/+$/, '')}/${endpoint.replace(/^\/+/, '')}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const start = Date.now();
 
   try {
     const res = await fetch(url, {
@@ -137,15 +206,23 @@ async function apiPost(baseUrl, endpoint, body, token, timeoutMs = 35000) {
     });
     const text = await res.text();
     clearTimeout(timer);
+    const latency = Date.now() - start;
     if (!res.ok) {
+      logNet('POST', endpoint, res.status, latency, `HTTP Error: ${text.slice(0, 120)}`);
       throw new Error(`HTTP ${res.status}: ${text}`);
     }
-    return JSON.parse(text);
+    const parsed = JSON.parse(text);
+    if (endpoint !== 'ilink/bot/getupdates' && endpoint !== 'ilink/bot/sendtyping') {
+      logNet('POST', endpoint, res.status, latency, `ret=${parsed.ret}, errcode=${parsed.errcode || 0}`);
+    }
+    return parsed;
   } catch (err) {
     clearTimeout(timer);
+    const latency = Date.now() - start;
     if (err.name === 'AbortError') {
       return { ret: 0, timeout: true };
     }
+    logNet('POST', endpoint, 'ERR', latency, err.message);
     throw err;
   }
 }
@@ -486,6 +563,9 @@ function formatQuoteContext(refMsg) {
 
 async function sendWechatMessage(auth, toUserId, contextToken, text) {
   const clientId = `cli_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+  const textPreview = String(text || '').replace(/\s+/g, ' ').slice(0, 100) + (String(text || '').length > 100 ? '...' : '');
+  logSend(`📤 发送微信回复至 ${toUserId} (${String(text || '').length} 字符): "${textPreview}"`);
+
   const body = {
     msg: {
     from_user_id: '',
@@ -504,17 +584,19 @@ async function sendWechatMessage(auth, toUserId, contextToken, text) {
     base_info: { channel_version: '2.4.8', bot_agent: 'AntigravityClawBot/1.0' },
   };
 
+  const start = Date.now();
   const result = await apiPost(auth.baseUrl, 'ilink/bot/sendmessage', body, auth.botToken, 15000);
+  const latency = Date.now() - start;
   const recipient = userRegistry.get(toUserId) || userRegistry.ensure(toUserId);
   try {
     appendChatRecord(recipient.paths.chatHistoryFile, 'assistant', text || '（已处理）');
   } catch (err) {
-    log(`⚠️ 保存聊天记录失败: ${err.message}`);
+    logError('STORAGE', `保存聊天记录失败: ${err.message}`);
   }
   if (result && (result.ret !== undefined && result.ret !== 0 || result.errcode !== undefined && result.errcode !== 0)) {
-    log(`⚠️ 回复接口返回异常: ret=${result.ret}, errcode=${result.errcode}, errmsg=${result.errmsg || 'none'}`);
+    logError('SEND_FAIL', `回复接口返回异常: ret=${result.ret}, errcode=${result.errcode}, errmsg=${result.errmsg || 'none'}`);
   } else {
-    log(`📤 回复接口响应: ${JSON.stringify(result)}; to=${toUserId}, chars=${String(text || '').length}`);
+    logSend(`✅ 回复发送成功 (耗时: ${latency}ms, ret=0, to=${toUserId})`);
   }
   return result;
 }
@@ -765,11 +847,21 @@ async function runDaemon() {
 
       const msgs = updates.msgs || [];
       if (msgs.length > 0) {
-        log(`📥 收到新消息数: ${msgs.length}`);
+        log(`📥 轮询获取到新消息批次，共计 ${msgs.length} 条原始记录`);
         for (const incoming of msgs) {
-          log(`📨 消息诊断: from=${incoming.from_user_id || 'none'}, type=${incoming.message_type}, items=${(incoming.item_list || []).length}`);
+          const items = incoming.item_list || [];
+          const summaryList = items.map((it) => {
+            if (it.type === 1) return `[文本: "${it.text_item?.text?.trim() || ''}"]`;
+            if (it.type === 2) return `[图片: aes_key=${it.image_item?.media?.aes_key ? 'yes' : 'no'}]`;
+            if (it.type === 3) return `[语音: "${it.voice_item?.text || ''}"]`;
+            if (it.type === 4) return `[文件: "${it.file_item?.file_name || '文档'}"]`;
+            if (it.type === 5) return `[视频: 时长=${it.video_item?.play_length || 0}s]`;
+            return `[类型 ${it.type}]`;
+          });
+          logRecv(`📨 收到微信原始消息: from=${incoming.from_user_id || 'none'} | type=${incoming.message_type} | msg_id=${incoming.msg_id || 'none'} seq=${incoming.sequence_id || 'none'}\n           内容: ${summaryList.join(' ') || '(空内容条目)'}`);
         }
       }
+
 
       const validMsgs = msgs.filter(m => m.from_user_id !== auth.botId && m.message_type !== 2);
       if (msgs.length > 0 && validMsgs.length === 0) {
@@ -983,16 +1075,16 @@ async function runDaemon() {
         try {
           const timeHeader = `[当前北京时间: ${getNowGmt8Str()}]\n`;
           const finalPrompt = timeHeader + promptForAI;
-          log(`⚙️ 正在调用 AI (${AI_PROVIDER}) 推理执行...`);
+          log(`⚙️ 正在调度 AI (${AI_PROVIDER}) 推理执行: 用户=${fromUser}, 思考链模式=${user.thinkMode ? '开启' : '关闭'}, 会话ID=${convId || '(首轮)'}`);
           const convId = loadConversation(user.paths.conversationFile) || user.conversationId;
           let onProgress = null;
           if (user.thinkMode) {
             onProgress = createProgressNotifier(async (msg) => {
-              log(`[阶段进度通知 -> ${fromUser}]: ${msg}`);
+              log(`💡 [阶段进度通知 -> ${fromUser}]: ${msg}`);
               try {
                 await sendWechatMessage(auth, fromUser, latestContextToken, msg);
               } catch (notifyErr) {
-                log(`⚠️ 阶段通知发送失败: ${notifyErr.message}`);
+                logError('NOTIFY_FAIL', `阶段通知发送失败: ${notifyErr.message}`);
               }
             });
           }
@@ -1018,13 +1110,11 @@ async function runDaemon() {
 
           await stopTypingStatus(auth, fromUser, typingTicket, typingInterval);
           typingInterval = null;
-          log(`[正在回复 ${fromUser}]: ${result.response.slice(0, 60)}...`);
           await sendWechatMessage(auth, fromUser, latestContextToken, result.response);
-          log(`✅ 回复发送成功！`);
         } catch (execErr) {
           await stopTypingStatus(auth, fromUser, typingTicket, typingInterval);
           typingInterval = null;
-          log(`❌ AI 执行失败: ${execErr.message}`);
+          logError('AI_EXEC', `AI 推理或执行失败: ${execErr.message}`, execErr);
           await sendWechatMessage(auth, fromUser, latestContextToken, `⚠️ 执行出错: ${execErr.message}`);
         }
       }

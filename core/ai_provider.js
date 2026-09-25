@@ -75,28 +75,90 @@ async function callOpenAICompatible(messages, timeoutMs = 60000) {
   }
 }
 
+const colors = {
+  reset: '\x1b[0m',
+  bold: '\x1b[1m',
+  dim: '\x1b[2m',
+  cyan: '\x1b[36m',
+  yellow: '\x1b[33m',
+  green: '\x1b[32m',
+  red: '\x1b[31m',
+  magenta: '\x1b[35m',
+  blue: '\x1b[34m',
+  gray: '\x1b[90m',
+};
+
+function getCategoryColor(category) {
+  if (category.startsWith('SPAWN')) return colors.cyan + colors.bold;
+  if (category.startsWith('PROCESS')) return colors.magenta;
+  if (category.startsWith('TOOL/ACTIVE')) return colors.yellow + colors.bold;
+  if (category.startsWith('TOOL/DONE')) return colors.green;
+  if (category.startsWith('TOOL/ERROR')) return colors.red + colors.bold;
+  if (category.startsWith('REASONING')) return colors.blue;
+  if (category.startsWith('RESULT')) return colors.green + colors.bold;
+  if (category.startsWith('CLOSE')) return colors.gray;
+  if (category.startsWith('ERROR') || category.startsWith('STDERR') || category.startsWith('TIMEOUT')) return colors.red + colors.bold;
+  return colors.reset;
+}
+
+function formatAgyLog(category, message, details = null) {
+  const ts = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  const color = getCategoryColor(category);
+  console.log(`[${ts}] ${color}[AGY/${category}]${colors.reset} ${message}`);
+  if (details !== null && details !== undefined) {
+    if (typeof details === 'object') {
+      try {
+        const text = JSON.stringify(details, null, 2);
+        console.log(text.split('\n').map((l) => `           ${colors.dim}${l}${colors.reset}`).join('\n'));
+      } catch {
+        console.log(`           ${details}`);
+      }
+    } else {
+      console.log(`           ${details}`);
+    }
+  }
+}
+
 /**
  * Call Antigravity CLI (agy)
  */
 async function callAntigravityCLI(promptText, conversationId, timeoutMs = 180000, options = {}) {
   return new Promise((resolve, reject) => {
     const agent = resolveAgentCommand();
-    const useStreamJson = Boolean(options.onProgress && typeof options.onProgress === 'function');
     const args = [
       '-p', promptText,
       '--model', AGY_MODEL,
-      '--output-format', useStreamJson ? 'stream-json' : 'json',
+      '--output-format', 'stream-json',
     ];
     args.push('--dangerously-skip-permissions');
     if (conversationId) {
       args.push('--conversation', conversationId);
     }
 
+    const startTime = Date.now();
+    const cwd = options.cwd || process.env.AGY_CWD || process.cwd();
+
+    formatAgyLog('SPAWN', `🚀 启动 Antigravity CLI 引擎 (Model: ${AGY_MODEL})`, {
+      binary: agent.command,
+      model: AGY_MODEL,
+      conversationId: conversationId || '(新会话 - 初始无记忆)',
+      cwd,
+      envOverrides: {
+        OMNI_USER_ID: options.env?.OMNI_USER_ID || 'none',
+        AGY_CWD: options.env?.AGY_CWD || cwd,
+        MS_TODO_USER_DATA_DIR: options.env?.MS_TODO_USER_DATA_DIR || 'default',
+        HOME: options.env?.HOME || 'default',
+      },
+      promptPreview: promptText.replace(/\s+/g, ' ').slice(0, 120) + (promptText.length > 120 ? '...' : ''),
+    });
+
     const child = spawn(agent.command, args, {
-      cwd: options.cwd || process.env.AGY_CWD || process.cwd(),
+      cwd,
       env: { ...process.env, ...(options.env || {}) },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+
+    formatAgyLog('PROCESS', `⚡ 子进程已就绪 (PID: ${child.pid})，等待流式推理事件与工具调度...`);
 
     let stdout = '';
     let stderr = '';
@@ -106,37 +168,92 @@ async function callAntigravityCLI(promptText, conversationId, timeoutMs = 180000
 
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
+      formatAgyLog('TIMEOUT', `❌ 进程超时 (${Math.round(timeoutMs / 1000)}秒)，已被强制终止 (PID: ${child.pid})`);
       reject(new Error(`Antigravity CLI 执行超时 (${Math.round(timeoutMs / 1000)}秒)，请稍后重试`));
     }, timeoutMs);
 
     child.stdout.on('data', (d) => {
       const chunk = d.toString();
       stdout += chunk;
-      if (useStreamJson) {
-        streamBuffer += chunk;
-        const lines = streamBuffer.split('\n');
-        streamBuffer = lines.pop();
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          try {
-            const item = JSON.parse(trimmed);
-            if (item.event === 'init' && item.conversation_id) {
-              lastConversationId = item.conversation_id;
-            } else if (item.event === 'step_update' && item.step_update) {
-              options.onProgress(item.step_update);
-            } else if (item.event === 'result' && item.result) {
-              finalResult = item.result;
+      streamBuffer += chunk;
+      const lines = streamBuffer.split('\n');
+      streamBuffer = lines.pop();
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const item = JSON.parse(trimmed);
+          if (item.event === 'init' && item.conversation_id) {
+            lastConversationId = item.conversation_id;
+            formatAgyLog('INIT', `🔗 会话初始化完成 (ID: ${item.conversation_id})`);
+          } else if (item.event === 'step_update' && item.step_update) {
+            const su = item.step_update;
+            if (options.onProgress) {
+              options.onProgress(su);
             }
-          } catch {}
-        }
+            if (su.step_type === 'tool' && su.state === 'ACTIVE') {
+              const p = su.tool_info?.parameters || {};
+              if (su.tool_name === 'call_mcp_tool') {
+                let parsedArgs = p.Arguments;
+                try {
+                  if (typeof parsedArgs === 'string') parsedArgs = JSON.parse(parsedArgs);
+                } catch {}
+                formatAgyLog('TOOL/ACTIVE', `🔧 [Step ${su.step_index}] 正在调用 MCP 工具: ${p.ServerName || 'mcp'} -> ${p.ToolName}`, {
+                  server: p.ServerName,
+                  tool: p.ToolName,
+                  arguments: parsedArgs
+                });
+              } else {
+                formatAgyLog('TOOL/ACTIVE', `🔧 [Step ${su.step_index}] 正在调用内置工具: ${su.tool_name}`, p);
+              }
+            } else if (su.step_type === 'tool' && su.state === 'DONE') {
+              const output = su.tool_info?.output;
+              let outputSnippet = null;
+              if (output !== undefined && output !== null) {
+                if (typeof output === 'object') {
+                  try { outputSnippet = JSON.stringify(output); } catch { outputSnippet = String(output); }
+                } else {
+                  outputSnippet = String(output).trim();
+                }
+                if (outputSnippet.length > 250) {
+                  outputSnippet = outputSnippet.slice(0, 250) + '... (已截断)';
+                }
+              }
+              formatAgyLog('TOOL/DONE', `✅ [Step ${su.step_index}] 工具执行完毕 (耗时: ${su.duration_seconds?.toFixed(2) || 0}s, 工具: ${su.tool_name})`, outputSnippet ? { output: outputSnippet } : null);
+            } else if (su.step_type === 'tool' && su.state === 'ERROR') {
+              formatAgyLog('TOOL/ERROR', `❌ [Step ${su.step_index}] 工具执行失败 (耗时: ${su.duration_seconds?.toFixed(2) || 0}s, 工具: ${su.tool_name})`, su.tool_info?.error || su.error || '未知错误');
+            } else if (su.step_type === 'agent_response' && su.state === 'DONE') {
+              const u = su.usage || {};
+              const tokenStr = `Tokens: 输入=${u.input_tokens || 0}, 输出=${u.output_tokens || 0}, 思考=${u.thinking_tokens || 0}`;
+              formatAgyLog('REASONING', `💭 [Step ${su.step_index}] 阶段性思考生成完成 (耗时: ${su.duration_seconds?.toFixed(2) || 0}s | ${tokenStr})`);
+            }
+          } else if (item.event === 'result' && item.result) {
+            finalResult = item.result;
+            const r = item.result;
+            const u = r.usage || {};
+            const tokenSummary = `总耗时=${r.duration_seconds?.toFixed(2) || 0}s | 轮数=${r.num_turns || 1} | 总Token: 输入=${u.input_tokens || 0}, 输出=${u.output_tokens || 0}, 思考=${u.thinking_tokens || 0}`;
+            formatAgyLog('RESULT', `🏁 全流程推理圆满完成! [${tokenSummary}]`);
+          } else if (item.event === 'error') {
+            formatAgyLog('ERROR', `❌ Antigravity CLI 事件错误`, item);
+          }
+        } catch {}
       }
     });
-    child.stderr.on('data', (d) => { stderr += d.toString(); });
+
+    child.stderr.on('data', (d) => {
+      const errStr = d.toString().trim();
+      stderr += errStr;
+      if (errStr) {
+        formatAgyLog('STDERR', `⚠️ ${errStr}`);
+      }
+    });
 
     child.on('close', (code) => {
       clearTimeout(timer);
-      if (useStreamJson && finalResult && finalResult.response) {
+      const totalElapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+      formatAgyLog('CLOSE', `🛑 Antigravity 进程生命周期结束 (PID: ${child.pid}, 退出码: ${code}, 总历时: ${totalElapsed}s)`);
+
+      if (finalResult && finalResult.response) {
         return resolve({
           response: finalResult.response.trim(),
           conversationId: finalResult.conversation_id || lastConversationId || conversationId,
@@ -163,16 +280,18 @@ async function callAntigravityCLI(promptText, conversationId, timeoutMs = 180000
 
     child.on('error', (err) => {
       clearTimeout(timer);
+      formatAgyLog('ERROR', `❌ Antigravity 启动失败: ${err.message}`);
       if (err.code === 'ENOENT') {
         return reject(new Error(`未找到 Antigravity/agy CLI。请安装 agy，或设置 AGY_BIN_PATH；当前尝试路径: ${agent.command}`));
       }
       if (err.code === 'EINVAL') {
-        return reject(new Error(`Windows 无法启动 Antigravity/agy CLI（EINVAL）。请确认 AGY_BIN_PATH 指向可执行的 agy/agy.cmd 文件；当前路径: ${agent.command}，工作目录: ${options.cwd || process.env.AGY_CWD || process.cwd()}`));
+        return reject(new Error(`Windows 无法启动 Antigravity/agy CLI（EINVAL）。请确认 AGY_BIN_PATH 指向可执行的 agy/agy.cmd 文件；当前路径: ${agent.command}，工作目录: ${cwd}`));
       }
       reject(err);
     });
   });
 }
+
 
 /**
  * Unified executeAI function
