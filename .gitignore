@@ -19,6 +19,9 @@ tokens/
 data/*.json
 !data/*.example
 !data/.gitkeep
+data/wechat/users/
+data/wechat/users.json
+data/wechat/
 synced_todos.json
 group_history.json
 *.db

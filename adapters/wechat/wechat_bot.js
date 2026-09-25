@@ -8,6 +8,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
+const { spawn } = require('node:child_process');
+const { pathToFileURL } = require('node:url');
 
 // Load environment from root .env if present
 const rootEnvPath = path.resolve(__dirname, '../../.env');
@@ -49,7 +51,13 @@ try {
   } catch {}
 }
 
-const { executeAI, AI_PROVIDER, LLM_MODEL } = require('../../core/ai_provider.js');
+const { executeAI, AI_PROVIDER, LLM_MODEL, AGY_MODEL } = require('../../core/ai_provider.js');
+const {
+  UserRegistry,
+  loadConversation,
+  saveConversation,
+  appendChatRecord,
+} = require('./user_context.js');
 
 const DEFAULT_BASE_URL = (process.env.WECHAT_BASE_URL || 'https://ilinkai.weixin.qq.com').replace(/\/+$/, '');
 const CDN_BASE_URL = 'https://novac2c.cdn.weixin.qq.com/c2c';
@@ -58,17 +66,14 @@ const DATA_DIR = process.env.WECHAT_DATA_DIR
   ? path.resolve(process.env.WECHAT_DATA_DIR)
   : path.join(__dirname, '../../data/wechat');
 const AUTH_FILE = path.join(DATA_DIR, 'auth.json');
-const CONV_FILE = path.join(DATA_DIR, 'conversations.json');
 const SYNC_FILE = path.join(DATA_DIR, 'sync_buf.txt');
-const MEDIA_DIR = path.join(DATA_DIR, 'media');
+const LEGACY_CONV_FILE = path.join(DATA_DIR, 'conversations.json');
+const userRegistry = new UserRegistry(DATA_DIR, LEGACY_CONV_FILE);
+const bindingProcesses = new Map();
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
-if (!fs.existsSync(MEDIA_DIR)) {
-  fs.mkdirSync(MEDIA_DIR, { recursive: true });
-}
-
 function loadAuth() {
   if (fs.existsSync(AUTH_FILE)) {
     try {
@@ -82,21 +87,6 @@ function loadAuth() {
 
 function saveAuth(data) {
   fs.writeFileSync(AUTH_FILE, JSON.stringify(data, null, 2), 'utf8');
-}
-
-function loadConversations() {
-  if (fs.existsSync(CONV_FILE)) {
-    try {
-      return JSON.parse(fs.readFileSync(CONV_FILE, 'utf8'));
-    } catch {
-      return {};
-    }
-  }
-  return {};
-}
-
-function saveConversations(data) {
-  fs.writeFileSync(CONV_FILE, JSON.stringify(data, null, 2), 'utf8');
 }
 
 function loadSyncBuf() {
@@ -192,7 +182,23 @@ async function loginFlow() {
   }
 
   const qrcode = qrRes.qrcode;
-  const qrUrl = `https://ilinkai.weixin.qq.com/ilink/bot/qrcode/${qrcode}`;
+  const qrUrl = qrRes.qrcode_img_content ||
+    `https://ilinkai.weixin.qq.com/ilink/bot/qrcode/${qrcode}`;
+  const qrPage = path.join(DATA_DIR, 'wechat-login-qr.html');
+  const escapedQrUrl = qrUrl.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+  fs.writeFileSync(
+    qrPage,
+    `<!doctype html><meta charset="utf-8"><title>微信登录二维码</title>` +
+      `<style>body{font-family: sans-serif;text-align:center;margin:3rem}` +
+      `img{width:min(80vw,480px);image-rendering:auto}</style>` +
+      `<h1>请使用微信扫描二维码</h1>` +
+      `<p>如果二维码过期，请重新启动适配器。</p>` +
+      `<img src="${escapedQrUrl}" alt="微信登录二维码">` +
+      `<p><a href="${escapedQrUrl}">${escapedQrUrl}</a></p>`,
+    { encoding: 'utf8', mode: 0o600 }
+  );
+  log(`二维码链接（可复制到浏览器打开）: ${qrUrl}`);
+  log(`本地二维码页面: ${qrPage}`);
   log(`\n请使用微信扫描下方二维码以绑定助理机器人：`);
   if (qrcodeTerminal) {
     qrcodeTerminal.generate(qrUrl, { small: true });
@@ -204,7 +210,7 @@ async function loginFlow() {
 
   while (true) {
     const checkRes = await apiGet(
-      `${baseUrl}/ilink/bot/check_bot_qrcode_status?qrcode=${encodeURIComponent(qrcode)}`,
+      `${baseUrl}/ilink/bot/get_qrcode_status?qrcode=${encodeURIComponent(qrcode)}`,
       null,
       40000
     );
@@ -227,7 +233,8 @@ async function loginFlow() {
       log('🎉 微信授权成功！正在保存登录态凭据...');
       const authData = {
         botToken: checkRes.bot_token,
-        botId: checkRes.bot_id,
+        botId: checkRes.ilink_bot_id || checkRes.bot_id ||
+          String(checkRes.bot_token || '').split(':', 1)[0],
         userId: checkRes.ilink_user_id,
         baseUrl: checkRes.baseurl || baseUrl,
         loginTime: new Date().toISOString(),
@@ -277,13 +284,13 @@ function detectImageExtension(buf) {
   return '.png';
 }
 
-function cleanOldMediaFiles() {
+function cleanOldMediaFiles(mediaDir) {
   try {
-    const files = fs.readdirSync(MEDIA_DIR);
+    const files = fs.readdirSync(mediaDir);
     const now = Date.now();
     const SEVEN_DAYS = 7 * 24 * 3600 * 1000;
     for (const file of files) {
-      const p = path.join(MEDIA_DIR, file);
+      const p = path.join(mediaDir, file);
       const stat = fs.statSync(p);
       if (now - stat.mtimeMs > SEVEN_DAYS) {
         fs.unlinkSync(p);
@@ -292,7 +299,7 @@ function cleanOldMediaFiles() {
   } catch {}
 }
 
-async function downloadAndSaveWechatImage(imageItem) {
+async function downloadAndSaveWechatImage(imageItem, mediaDir) {
   if (!imageItem) return null;
   const media = imageItem.media || {};
   let url = media.full_url;
@@ -324,15 +331,16 @@ async function downloadAndSaveWechatImage(imageItem) {
     } catch {}
   }
 
-  cleanOldMediaFiles();
+  fs.mkdirSync(mediaDir, { recursive: true, mode: 0o700 });
+  cleanOldMediaFiles(mediaDir);
   const ext = detectImageExtension(decryptedBuf);
   const filename = `wechat_img_${Date.now()}_${crypto.randomBytes(4).toString('hex')}${ext}`;
-  const filePath = path.join(MEDIA_DIR, filename);
+  const filePath = path.join(mediaDir, filename);
   fs.writeFileSync(filePath, decryptedBuf);
   return filePath;
 }
 
-async function downloadAndSaveWechatVideo(videoItem) {
+async function downloadAndSaveWechatVideo(videoItem, mediaDir) {
   if (!videoItem) return null;
   const media = videoItem.media || {};
   let url = media.full_url;
@@ -343,7 +351,7 @@ async function downloadAndSaveWechatVideo(videoItem) {
   const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
   if (videoItem.video_size && videoItem.video_size > MAX_VIDEO_BYTES) {
     if (videoItem.thumb_media) {
-      const thumbPath = await downloadAndSaveWechatImage({ media: videoItem.thumb_media });
+      const thumbPath = await downloadAndSaveWechatImage({ media: videoItem.thumb_media }, mediaDir);
       return { thumbPath, duration: videoItem.play_length, fallback: true, size: videoItem.video_size };
     }
     return null;
@@ -351,7 +359,7 @@ async function downloadAndSaveWechatVideo(videoItem) {
 
   if (!url) {
     if (videoItem.thumb_media) {
-      const thumbPath = await downloadAndSaveWechatImage({ media: videoItem.thumb_media });
+      const thumbPath = await downloadAndSaveWechatImage({ media: videoItem.thumb_media }, mediaDir);
       return { thumbPath, duration: videoItem.play_length, fallback: true };
     }
     return null;
@@ -380,15 +388,16 @@ async function downloadAndSaveWechatVideo(videoItem) {
     } catch {}
   }
 
-  cleanOldMediaFiles();
+  fs.mkdirSync(mediaDir, { recursive: true, mode: 0o700 });
+  cleanOldMediaFiles(mediaDir);
   const filename = `wechat_video_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.mp4`;
-  const filePath = path.join(MEDIA_DIR, filename);
+  const filePath = path.join(mediaDir, filename);
   fs.writeFileSync(filePath, decryptedBuf);
 
   let thumbPath = null;
   if (videoItem.thumb_media) {
     try {
-      thumbPath = await downloadAndSaveWechatImage({ media: videoItem.thumb_media });
+      thumbPath = await downloadAndSaveWechatImage({ media: videoItem.thumb_media }, mediaDir);
     } catch {}
   }
 
@@ -400,7 +409,7 @@ async function downloadAndSaveWechatVideo(videoItem) {
   };
 }
 
-async function downloadAndSaveWechatFile(fileItem) {
+async function downloadAndSaveWechatFile(fileItem, mediaDir) {
   if (!fileItem) return null;
   const media = fileItem.media || {};
   let url = media.full_url;
@@ -437,12 +446,13 @@ async function downloadAndSaveWechatFile(fileItem) {
     } catch {}
   }
 
-  cleanOldMediaFiles();
+  fs.mkdirSync(mediaDir, { recursive: true, mode: 0o700 });
+  cleanOldMediaFiles(mediaDir);
   const rawName = fileItem.file_name || 'document';
   const ext = path.extname(rawName) || '.bin';
   const safeBase = path.basename(rawName, ext).replace(/[^\w\u4e00-\u9fa5_-]/g, '_');
   const filename = `wechat_file_${Date.now()}_${safeBase}${ext}`;
-  const filePath = path.join(MEDIA_DIR, filename);
+  const filePath = path.join(mediaDir, filename);
   fs.writeFileSync(filePath, decryptedBuf);
 
   return {
@@ -478,10 +488,10 @@ async function sendWechatMessage(auth, toUserId, contextToken, text) {
   const clientId = `cli_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
   const body = {
     msg: {
-      from_user_id: auth.botId,
+    from_user_id: '',
       to_user_id: toUserId,
       client_id: clientId,
-      message_type: 1,
+    message_type: 2,
       message_state: 2,
       context_token: contextToken || undefined,
       item_list: [
@@ -494,7 +504,19 @@ async function sendWechatMessage(auth, toUserId, contextToken, text) {
     base_info: { channel_version: '2.4.8', bot_agent: 'AntigravityClawBot/1.0' },
   };
 
-  return await apiPost(auth.baseUrl, 'ilink/bot/sendmessage', body, auth.botToken, 15000);
+  const result = await apiPost(auth.baseUrl, 'ilink/bot/sendmessage', body, auth.botToken, 15000);
+  const recipient = userRegistry.get(toUserId) || userRegistry.ensure(toUserId);
+  try {
+    appendChatRecord(recipient.paths.chatHistoryFile, 'assistant', text || '（已处理）');
+  } catch (err) {
+    log(`⚠️ 保存聊天记录失败: ${err.message}`);
+  }
+  if (result && (result.ret !== undefined && result.ret !== 0 || result.errcode !== undefined && result.errcode !== 0)) {
+    log(`⚠️ 回复接口返回异常: ret=${result.ret}, errcode=${result.errcode}, errmsg=${result.errmsg || 'none'}`);
+  } else {
+    log(`📤 回复接口响应: ${JSON.stringify(result)}; to=${toUserId}, chars=${String(text || '').length}`);
+  }
+  return result;
 }
 
 async function sendTypingStatus(auth, toUserId, typingTicket) {
@@ -503,9 +525,105 @@ async function sendTypingStatus(auth, toUserId, typingTicket) {
     await apiPost(auth.baseUrl, 'ilink/bot/sendtyping', {
       ilink_user_id: toUserId,
       typing_ticket: typingTicket,
+      status: 1,
       base_info: { channel_version: '2.4.8', bot_agent: 'AntigravityClawBot/1.0' },
     }, auth.botToken, 5000);
   } catch {}
+}
+
+async function stopTypingStatus(auth, toUserId, typingTicket, interval) {
+  if (interval) clearInterval(interval);
+  if (!typingTicket) return;
+  try {
+    await apiPost(auth.baseUrl, 'ilink/bot/sendtyping', {
+      ilink_user_id: toUserId,
+      typing_ticket: typingTicket,
+      status: 0,
+      base_info: { channel_version: '2.4.8', bot_agent: 'AntigravityClawBot/1.0' },
+    }, auth.botToken, 5000);
+  } catch (err) {
+    log(`⚠️ 停止输入状态失败: ${err.message}`);
+  }
+}
+
+async function startTodoBinding(auth, userId, contextToken) {
+  if (bindingProcesses.has(userId)) {
+    await sendWechatMessage(auth, userId, contextToken, '🔐 你的 Microsoft To Do 授权已经在进行中，请打开之前收到的链接完成授权。');
+    return;
+  }
+
+  const script = path.join(__dirname, '../../scripts/bind_todo_user.js');
+  const user = userRegistry.ensure(userId);
+  const authModule = process.env.MS_TODO_AUTH_MODULE_PATH ||
+    (() => {
+      try {
+        return require.resolve('@mag-cie/mcp-microsoft-todo/dist/auth.js');
+      } catch {
+        const candidates = [
+          path.join(process.env.APPDATA || '', 'npm', 'node_modules', '@mag-cie', 'mcp-microsoft-todo', 'dist', 'auth.js'),
+          '/usr/lib/node_modules/@mag-cie/mcp-microsoft-todo/dist/auth.js',
+        ];
+        return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
+      }
+    })();
+  const child = spawn(process.execPath, [script, userId], {
+    cwd: path.resolve(__dirname, '../..'),
+    env: {
+      ...process.env,
+      MS_TODO_AUTH_MODULE_PATH: authModule,
+      HOME: user.paths.auth,
+      USERPROFILE: user.paths.auth,
+      XDG_CONFIG_HOME: user.paths.auth,
+      OMNI_USER_ID: userId,
+      MS_TODO_USER_DATA_DIR: user.paths.auth,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  bindingProcesses.set(userId, child);
+  await userRegistry.update(userId, { status: 'authorizing' });
+  await sendWechatMessage(
+    auth,
+    userId,
+    contextToken,
+    '🔐 已启动你的 Microsoft To Do 独立授权流程。请稍候，登录网址和设备码会自动发送给你。'
+  );
+
+  let stderrBuffer = '';
+  child.stderr.on('data', async (chunk) => {
+    stderrBuffer += chunk.toString();
+    const blocks = stderrBuffer.split(/\r?\n\r?\n/);
+    stderrBuffer = blocks.pop() || '';
+    for (const block of blocks.map((value) => value.trim()).filter(Boolean)) {
+      try {
+        await sendWechatMessage(auth, userId, contextToken, `🌐 Microsoft To Do 授权提示：\n${block}`);
+      } catch (err) {
+        log(`⚠️ 无法发送授权提示: ${err.message}`);
+      }
+    }
+  });
+  child.on('close', async (code) => {
+    bindingProcesses.delete(userId);
+    const current = userRegistry.get(userId);
+    if (code === 0) {
+      if (!current || current.status !== 'active') {
+        await userRegistry.update(userId, { status: 'active', boundAt: new Date().toISOString() });
+      }
+      await sendWechatMessage(auth, userId, contextToken, '✅ Microsoft To Do 授权成功！现在可以直接发送待办指令了。');
+    } else if (code !== 0) {
+      await userRegistry.update(userId, { status: 'pending_todo_binding' });
+      await sendWechatMessage(auth, userId, contextToken, '❌ Microsoft To Do 授权未完成，请重新发送 /bind_todo 再试。');
+    }
+  });
+  child.on('error', async (err) => {
+    bindingProcesses.delete(userId);
+    await userRegistry.update(userId, { status: 'pending_todo_binding' });
+    log(`⚠️ Microsoft To Do 授权进程失败: ${err.message}`);
+    try {
+      await sendWechatMessage(auth, userId, contextToken, `❌ 无法启动 Microsoft To Do 授权：${err.message}`);
+    } catch (sendErr) {
+      log(`⚠️ 无法发送授权启动错误: ${sendErr.message}`);
+    }
+  });
 }
 
 function getNowGmt8Str() {
@@ -530,7 +648,7 @@ async function runDaemon() {
 
   log(`🤖 微信通道适配器已就绪！`);
   log(`📡 腾讯 iLink 官方网关: ${auth.baseUrl}`);
-  log(`🧠 AI 驱动模式: ${AI_PROVIDER} (${LLM_MODEL})`);
+  log(`🧠 AI 驱动模式: ${AI_PROVIDER} (${AI_PROVIDER === 'agy' ? AGY_MODEL : LLM_MODEL})`);
   log(`📂 工作区数据目录: ${DATA_DIR}`);
   log(`💬 开始监听微信私聊消息...`);
 
@@ -543,7 +661,6 @@ async function runDaemon() {
     log('⚠️ 发送 notifystart 心跳异常: ' + e.message);
   }
 
-  const conversations = loadConversations();
   let syncBuf = loadSyncBuf();
 
   while (true) {
@@ -574,13 +691,23 @@ async function runDaemon() {
         continue;
       }
 
-      if (updates.get_updates_buf) {
-        syncBuf = updates.get_updates_buf;
+      if (updates.get_updates_buf || updates.sync_buf) {
+        syncBuf = updates.get_updates_buf || updates.sync_buf;
         saveSyncBuf(syncBuf);
       }
 
       const msgs = updates.msgs || [];
+      if (msgs.length > 0) {
+        log(`📥 收到新消息数: ${msgs.length}`);
+        for (const incoming of msgs) {
+          log(`📨 消息诊断: from=${incoming.from_user_id || 'none'}, type=${incoming.message_type}, items=${(incoming.item_list || []).length}`);
+        }
+      }
+
       const validMsgs = msgs.filter(m => m.from_user_id !== auth.botId && m.message_type !== 2);
+      if (msgs.length > 0 && validMsgs.length === 0) {
+        log(`⚠️ 消息全部被过滤: botId=${auth.botId || 'none'}`);
+      }
 
       const userGroups = new Map();
       for (const msg of validMsgs) {
@@ -591,6 +718,20 @@ async function runDaemon() {
       }
 
       for (const [fromUser, userMsgs] of userGroups.entries()) {
+        const user = userRegistry.get(fromUser) || userRegistry.ensure(fromUser);
+        for (const incoming of userMsgs) {
+          try {
+            appendChatRecord(
+              user.paths.chatHistoryFile,
+              'user',
+              '微信原始消息（完整 JSON 见下方）',
+              incoming
+            );
+          } catch (err) {
+            log(`⚠️ 保存用户聊天记录失败: ${err.message}`);
+          }
+        }
+        const conversationId = loadConversation(user.paths.conversationFile) || user.conversationId;
         const textParts = [];
         const imageItems = [];
         const videoItems = [];
@@ -632,20 +773,38 @@ async function runDaemon() {
 
         if (imageItems.length === 0 && videoItems.length === 0 && fileItems.length === 0) {
           if (rawText === '/help' || rawText === '#help') {
-            const helpMsg = `🤖 Omni-Assistant 微信智能助手\n\n- 直接发送对话、任务需求、图片或文档开始交互\n- /status : 查看当前系统与 AI 驱动状态\n- /reset  : 清除会话记忆，开启新对话\n- /help   : 查看本帮助说明`;
+            const bindingLine = user.status === 'active'
+              ? '✅ Microsoft To Do 已完成绑定'
+              : '⚠️ Microsoft To Do 尚未绑定：请发送 /bind_todo 开始授权';
+            const helpMsg = `🤖 Omni-Assistant 微信智能助手\n\n- 直接发送对话、任务需求、图片或文档开始交互\n- /bind_todo : 绑定你自己的 Microsoft To Do 账户\n- /binding_status : 查看个人绑定状态\n- /status : 查看当前系统与 AI 驱动状态\n- /reset  : 清除你的 agy 会话记忆\n- /help   : 查看本帮助说明\n\n${bindingLine}`;
             await sendWechatMessage(auth, fromUser, latestContextToken, helpMsg);
             continue;
           }
 
+          if (rawText === '/bind_todo' || rawText === '#bind_todo') {
+            await startTodoBinding(auth, fromUser, latestContextToken);
+            continue;
+          }
+
+          if (rawText === '/binding_status' || rawText === '#binding_status') {
+            const statusText = user.status === 'active'
+              ? '✅ 你的 Microsoft To Do 已绑定，任务和 AI 会话均使用独立用户空间。'
+              : user.status === 'authorizing'
+                ? '🔐 你的 Microsoft To Do 授权正在进行中，请使用之前收到的 Microsoft 登录网址和设备码完成授权。'
+              : '⚠️ 你的 Microsoft To Do 尚未绑定，请发送 /bind_todo 开始授权。';
+            await sendWechatMessage(auth, fromUser, latestContextToken, statusText);
+            continue;
+          }
+
           if (rawText === '/reset' || rawText === '/clear' || rawText === '#reset' || rawText === '#clear') {
-            delete conversations[fromUser];
-            saveConversations(conversations);
+            await userRegistry.resetConversation(fromUser);
             await sendWechatMessage(auth, fromUser, latestContextToken, '🔄 会话记忆已重置，接下来将开始全新对话。');
             continue;
           }
 
           if (rawText === '/status' || rawText === '#status') {
-            const statusMsg = `📊 智能体状态报告:\n- AI 引擎: ${AI_PROVIDER} (${LLM_MODEL})\n- 宿主负载: ${os.loadavg()[0].toFixed(2)}\n- 运行时间: ${(os.uptime() / 3600).toFixed(1)} 小时\n- 当前会话: ${conversations[fromUser] ? conversations[fromUser] : '无 (首轮)'}`;
+            const activeModel = AI_PROVIDER === 'agy' ? AGY_MODEL : LLM_MODEL;
+            const statusMsg = `📊 你的智能体状态报告:\n- AI 引擎: ${AI_PROVIDER} (${activeModel})\n- Microsoft To Do: ${user.status === 'active' ? '已绑定' : '未绑定'}\n- 宿主负载: ${os.loadavg()[0].toFixed(2)}\n- 运行时间: ${(os.uptime() / 3600).toFixed(1)} 小时\n- 当前会话: ${conversationId || '无 (首轮)'}`;
             await sendWechatMessage(auth, fromUser, latestContextToken, statusMsg);
             continue;
           }
@@ -655,7 +814,7 @@ async function runDaemon() {
         if (imageItems.length > 0) {
           for (const item of imageItems) {
             try {
-              const p = await downloadAndSaveWechatImage(item);
+              const p = await downloadAndSaveWechatImage(item, user.paths.media);
               if (p) downloadedImages.push(p);
             } catch {}
           }
@@ -665,7 +824,7 @@ async function runDaemon() {
         if (videoItems.length > 0) {
           for (const item of videoItems) {
             try {
-              const v = await downloadAndSaveWechatVideo(item);
+              const v = await downloadAndSaveWechatVideo(item, user.paths.media);
               if (v) downloadedVideos.push(v);
             } catch {}
           }
@@ -675,7 +834,7 @@ async function runDaemon() {
         if (fileItems.length > 0) {
           for (const item of fileItems) {
             try {
-              const f = await downloadAndSaveWechatFile(item);
+              const f = await downloadAndSaveWechatFile(item, user.paths.media);
               if (f) downloadedFiles.push(f);
             } catch {}
           }
@@ -713,7 +872,18 @@ async function runDaemon() {
 
         if (!promptForAI) continue;
 
+        if (user.status !== 'active') {
+          await sendWechatMessage(
+            auth,
+            fromUser,
+            latestContextToken,
+            '⚠️ 你的 Microsoft To Do 账户尚未绑定。为避免不同用户之间串用任务和会话，请先发送 /bind_todo 完成个人授权。'
+          );
+          continue;
+        }
+
         let typingInterval = null;
+        let typingTicket = null;
         try {
           const cfg = await apiPost(auth.baseUrl, 'ilink/bot/getconfig', {
             ilink_user_id: fromUser,
@@ -722,9 +892,10 @@ async function runDaemon() {
           }, auth.botToken, 5000);
 
           if (cfg.typing_ticket) {
-            await sendTypingStatus(auth, fromUser, cfg.typing_ticket);
+            typingTicket = cfg.typing_ticket;
+            await sendTypingStatus(auth, fromUser, typingTicket);
             typingInterval = setInterval(() => {
-              sendTypingStatus(auth, fromUser, cfg.typing_ticket);
+              sendTypingStatus(auth, fromUser, typingTicket);
             }, 4000);
           }
         } catch (e) {}
@@ -733,21 +904,33 @@ async function runDaemon() {
           const timeHeader = `[当前北京时间: ${getNowGmt8Str()}]\n`;
           const finalPrompt = timeHeader + promptForAI;
           log(`⚙️ 正在调用 AI (${AI_PROVIDER}) 推理执行...`);
-          const convId = conversations[fromUser];
-          const result = await executeAI(finalPrompt, convId);
+          const convId = loadConversation(user.paths.conversationFile) || user.conversationId;
+          const result = await executeAI(finalPrompt, convId, null, {
+            cwd: user.paths.workspace,
+            env: {
+              OMNI_USER_ID: fromUser,
+              OMNI_USER_DATA_DIR: user.paths.root,
+              AGY_CWD: user.paths.workspace,
+              MS_TODO_USER_DATA_DIR: user.paths.auth,
+              HOME: user.paths.agyHome,
+              USERPROFILE: user.paths.agyHome,
+              XDG_CONFIG_HOME: user.paths.agyHome,
+            },
+          });
 
           if (result.conversationId) {
-            conversations[fromUser] = result.conversationId;
-            saveConversations(conversations);
+            saveConversation(user.paths.conversationFile, result.conversationId);
+            await userRegistry.update(fromUser, { conversationId: result.conversationId });
           }
 
-          if (typingInterval) clearInterval(typingInterval);
-
+          await stopTypingStatus(auth, fromUser, typingTicket, typingInterval);
+          typingInterval = null;
           log(`[正在回复 ${fromUser}]: ${result.response.slice(0, 60)}...`);
           await sendWechatMessage(auth, fromUser, latestContextToken, result.response);
           log(`✅ 回复发送成功！`);
         } catch (execErr) {
-          if (typingInterval) clearInterval(typingInterval);
+          await stopTypingStatus(auth, fromUser, typingTicket, typingInterval);
+          typingInterval = null;
           log(`❌ AI 执行失败: ${execErr.message}`);
           await sendWechatMessage(auth, fromUser, latestContextToken, `⚠️ 执行出错: ${execErr.message}`);
         }

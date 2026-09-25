@@ -2,7 +2,7 @@ import os
 import sys
 import logging
 from pathlib import Path
-from typing import List
+
 
 # Determine Project Paths
 CORE_DIR = Path(__file__).resolve().parent
@@ -61,12 +61,11 @@ def _get_float(key: str, default: float = 0.0) -> float:
         return default
 
 # 1. Channel Toggles
-ENABLE_QQ = _get_bool("ENABLE_QQ", False)
 ENABLE_WECHAT = _get_bool("ENABLE_WECHAT", False)
 
 # 2. AI Provider Configuration
-# Supported providers: "openai" (default, includes DeepSeek and any standard endpoint) | "agy"
-AI_PROVIDER = os.getenv("AI_PROVIDER", "openai").strip().lower()
+# Supported providers: "agy" (default) | "openai" (DeepSeek and other compatible endpoints)
+AI_PROVIDER = os.getenv("AI_PROVIDER", "agy").strip().lower()
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
 LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat").strip()
@@ -75,25 +74,11 @@ LLM_TEMPERATURE = _get_float("LLM_TEMPERATURE", 0.1)
 AGY_BIN_PATH = os.getenv("AGY_BIN_PATH", "agy").strip()
 AGY_MODEL = os.getenv("AGY_MODEL", "gemini-3.8-flash-low").strip()
 
-# 3. QQ Channel Configuration
-ADMIN_QQ = _get_int("ADMIN_QQ", 0)
-_raw_groups = os.getenv("TARGET_GROUP_IDS", "").strip()
-TARGET_GROUP_IDS: List[int] = []
-if _raw_groups:
-    for g in _raw_groups.split(","):
-        g = g.strip()
-        if g.isdigit():
-            TARGET_GROUP_IDS.append(int(g))
-
-NAPCAT_HTTP_URL = os.getenv("NAPCAT_HTTP_URL", "http://127.0.0.1:3000").rstrip("/")
-NAPCAT_WS_URL = os.getenv("NAPCAT_WS_URL", "ws://127.0.0.1:3001")
-NAPCAT_TOKEN = os.getenv("NAPCAT_TOKEN", "").strip()
-
-# 4. WeChat Channel Configuration
+# 3. WeChat Channel Configuration
 WECHAT_BASE_URL = os.getenv("WECHAT_BASE_URL", "https://ilinkai.weixin.qq.com").rstrip("/")
 WECHAT_DATA_DIR = Path(os.getenv("WECHAT_DATA_DIR", str(PROJECT_ROOT / "data" / "wechat")))
 
-# 5. Microsoft To Do Integration
+# 4. Microsoft To Do Integration
 ENABLE_MS_TODO = _get_bool("ENABLE_MS_TODO", True)
 MS_TODO_DEFAULT_LIST_ID = os.getenv("MS_TODO_DEFAULT_LIST_ID", "").strip()
 MS_TODO_AUTH_MODULE_PATH = os.getenv(
@@ -102,7 +87,7 @@ MS_TODO_AUTH_MODULE_PATH = os.getenv(
 )
 DEFAULT_REMINDER_ADVANCE_MINUTES = _get_int("DEFAULT_REMINDER_ADVANCE_MINUTES", 15)
 
-# 6. Persistence & Logging
+# 5. Persistence & Logging
 HISTORY_FILE = Path(os.getenv("HISTORY_FILE_PATH", str(PROJECT_ROOT / "data" / "group_history.json")))
 MEMORY_FILE = Path(os.getenv("MEMORY_FILE_PATH", str(PROJECT_ROOT / "data" / "synced_todos.json")))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()

@@ -1,25 +1,7 @@
 version: '3.8'
 
 services:
-  # NapCat OneBot v11 QQ 协议容器 (当 ENABLE_QQ=true 时使用)
-  napcat:
-    image: mlikiowa/napcat-docker:latest
-    container_name: napcat
-    restart: always
-    environment:
-      - NAPCAT_UID=0
-      - NAPCAT_GID=0
-    volumes:
-      - ./data/napcat/config:/app/napcat/config
-      - ./data/napcat/data:/app/.config/QQ
-    ports:
-      - "3000:3000"
-      - "3001:3001"
-      - "6099:6099"
-    networks:
-      - assistant-net
-
-  # Omni-Assistant 核心与通道服务
+  # Omni-Assistant 微信 iLink、agy 与 Microsoft To Do 服务
   omni-assistant:
     build:
       context: ..
@@ -30,8 +12,6 @@ services:
       - ../.env
     volumes:
       - ../data:/app/data
-    depends_on:
-      - napcat
     networks:
       - assistant-net
 

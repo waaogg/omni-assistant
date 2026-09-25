@@ -10,7 +10,7 @@ function getEnv(key, fallback = '') {
   return process.env[key] !== undefined ? process.env[key] : fallback;
 }
 
-const AI_PROVIDER = getEnv('AI_PROVIDER', 'openai').toLowerCase().trim();
+const AI_PROVIDER = getEnv('AI_PROVIDER', 'agy').toLowerCase().trim();
 const LLM_BASE_URL = getEnv('LLM_BASE_URL', 'https://api.deepseek.com/v1').replace(/\/+$/, '');
 const LLM_API_KEY = getEnv('LLM_API_KEY', '').trim();
 const LLM_MODEL = getEnv('LLM_MODEL', 'deepseek-chat').trim();
@@ -18,6 +18,10 @@ const LLM_TEMPERATURE = parseFloat(getEnv('LLM_TEMPERATURE', '0.1')) || 0.1;
 
 const AGY_BIN_PATH = getEnv('AGY_BIN_PATH', 'agy').trim();
 const AGY_MODEL = getEnv('AGY_MODEL', 'gemini-3.8-flash-low').trim();
+
+function resolveAgentCommand() {
+  return { command: AGY_BIN_PATH, compatibility: 'agy' };
+}
 
 /**
  * Call OpenAI-compatible Chat Completions API
@@ -74,21 +78,22 @@ async function callOpenAICompatible(messages, timeoutMs = 60000) {
 /**
  * Call Antigravity CLI (agy)
  */
-async function callAntigravityCLI(promptText, conversationId, timeoutMs = 300000) {
+async function callAntigravityCLI(promptText, conversationId, timeoutMs = 180000, options = {}) {
   return new Promise((resolve, reject) => {
+    const agent = resolveAgentCommand();
     const args = [
       '-p', promptText,
       '--model', AGY_MODEL,
       '--output-format', 'json',
-      '--dangerously-skip-permissions'
     ];
+    args.push('--dangerously-skip-permissions');
     if (conversationId) {
       args.push('--conversation', conversationId);
     }
 
-    const child = spawn(AGY_BIN_PATH, args, {
-      cwd: process.env.AGY_CWD || process.cwd(),
-      env: { ...process.env },
+    const child = spawn(agent.command, args, {
+      cwd: options.cwd || process.env.AGY_CWD || process.cwd(),
+      env: { ...process.env, ...(options.env || {}) },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -97,7 +102,7 @@ async function callAntigravityCLI(promptText, conversationId, timeoutMs = 300000
 
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
-      reject(new Error(`Antigravity CLI 执行超时 (${Math.round(timeoutMs / 1000)}秒)`));
+      reject(new Error(`Antigravity CLI 执行超时 (${Math.round(timeoutMs / 1000)}秒)，请稍后重试`));
     }, timeoutMs);
 
     child.stdout.on('data', (d) => { stdout += d.toString(); });
@@ -126,6 +131,12 @@ async function callAntigravityCLI(promptText, conversationId, timeoutMs = 300000
 
     child.on('error', (err) => {
       clearTimeout(timer);
+      if (err.code === 'ENOENT') {
+        return reject(new Error(`未找到 Antigravity/agy CLI。请安装 agy，或设置 AGY_BIN_PATH；当前尝试路径: ${agent.command}`));
+      }
+      if (err.code === 'EINVAL') {
+        return reject(new Error(`Windows 无法启动 Antigravity/agy CLI（EINVAL）。请确认 AGY_BIN_PATH 指向可执行的 agy/agy.cmd 文件；当前路径: ${agent.command}，工作目录: ${options.cwd || process.env.AGY_CWD || process.cwd()}`));
+      }
       reject(err);
     });
   });
@@ -135,12 +146,19 @@ async function callAntigravityCLI(promptText, conversationId, timeoutMs = 300000
  * Unified executeAI function
  * Returns: { response: string, conversationId?: string }
  */
-async function executeAI(promptText, conversationId = null, systemPrompt = null) {
+async function executeAI(promptText, conversationId = null, systemPrompt = null, options = {}) {
   if (AI_PROVIDER === 'agy') {
-    return await callAntigravityCLI(promptText, conversationId);
+    try {
+      return await callAntigravityCLI(promptText, conversationId, 180000, options);
+    } catch (err) {
+      if (conversationId && err.message.includes('执行超时')) {
+        return await callAntigravityCLI(promptText, null, 180000, options);
+      }
+      throw err;
+    }
   }
 
-  // Default: OpenAI compatible (DeepSeek, etc.)
+  // OpenAI-compatible providers remain available when explicitly selected.
   const messages = [];
   if (systemPrompt) {
     messages.push({ role: 'system', content: systemPrompt });
@@ -160,5 +178,6 @@ module.exports = {
   callAntigravityCLI,
   AI_PROVIDER,
   LLM_MODEL,
+  AGY_MODEL,
   LLM_BASE_URL,
 };

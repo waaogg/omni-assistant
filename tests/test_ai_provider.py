@@ -15,7 +15,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from core import config, ai_provider
 
 def test_default_config():
-    assert config.AI_PROVIDER == "openai", f"Expected default openai, got {config.AI_PROVIDER}"
+    assert config.AI_PROVIDER == "agy", f"Expected default agy, got {config.AI_PROVIDER}"
     assert "deepseek" in config.LLM_BASE_URL.lower() or "v1" in config.LLM_BASE_URL, "Default base URL should point to DeepSeek"
     assert config.LLM_MODEL == "deepseek-chat"
     print("✅ test_default_config passed.")
@@ -26,7 +26,8 @@ def test_openai_compatible_call_structure():
         mock_resp.read.return_value = b'{"choices": [{"message": {"content": "Hello from DeepSeek Mock"}}]}'
         mock_urlopen.return_value.__enter__.return_value = mock_resp
 
-        reply = ai_provider.call_ai("Test message", system_prompt="Test system")
+        with patch.object(config, "AI_PROVIDER", "openai"):
+            reply = ai_provider.call_ai("Test message", system_prompt="Test system")
         assert reply == "Hello from DeepSeek Mock"
 
         # Verify call args
@@ -52,7 +53,7 @@ def test_agy_call_structure():
             # Check args
             args, kwargs = mock_run.call_args
             cmd_args = args[0]
-            assert cmd_args[0] == "agy"
+            assert cmd_args[0].lower().endswith(("agy", "agy.exe", "agy.cmd"))
             assert "-p" in cmd_args
             assert "--model" in cmd_args
     print("✅ test_agy_call_structure passed.")
@@ -62,7 +63,7 @@ def test_node_ai_provider():
         ["node", "-e", """
         const ai = require('./core/ai_provider.js');
         if (typeof ai.executeAI !== 'function') process.exit(1);
-        if (ai.AI_PROVIDER !== 'openai') process.exit(2);
+        if (ai.AI_PROVIDER !== 'agy') process.exit(2);
         if (ai.LLM_MODEL !== 'deepseek-chat') process.exit(3);
         console.log('Node AI Module OK');
         """],

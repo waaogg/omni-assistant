@@ -1,5 +1,5 @@
 [Unit]
-Description=Omni-Assistant (QQ & WeChat Multi-Channel Personal AI Daemon)
+Description=Omni-Assistant (WeChat iLink, agy and Microsoft To Do)
 After=network.target network-online.target
 Wants=network-online.target
 

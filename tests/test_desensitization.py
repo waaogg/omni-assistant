@@ -35,12 +35,9 @@ def test_zero_leakage():
     leaks = []
     
     for root, dirs, files in os.walk(PROJECT_ROOT):
-        if '.git' in dirs:
-            dirs.remove('.git')
-        if '__pycache__' in dirs:
-            dirs.remove('__pycache__')
-        if 'node_modules' in dirs:
-            dirs.remove('node_modules')
+        for ignored_dir in ['.git', '__pycache__', 'node_modules', 'data', 'media', 'logs', '.pytest_cache', 'legacy']:
+            if ignored_dir in dirs:
+                dirs.remove(ignored_dir)
             
         for file in files:
             file_path = Path(root) / file

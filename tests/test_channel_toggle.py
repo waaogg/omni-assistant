@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""
-Test channel toggle behavior (ENABLE_QQ, ENABLE_WECHAT)
-"""
+"""Test that only the WeChat channel controls the active entrypoint."""
 
 import subprocess
 import os
@@ -18,44 +16,40 @@ def run_main_check(env_overrides: dict):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         cwd=str(PROJECT_ROOT),
         env=env
     )
     combined = (res.stdout or "") + "\n" + (res.stderr or "")
     return res.returncode, combined
 
-def test_both_disabled():
-    code, out = run_main_check({"ENABLE_QQ": "false", "ENABLE_WECHAT": "false"})
-    assert code == 0, f"Expected 0, got {code}"
-    assert "未启用任何消息通道" in out
-    assert "QQ 通道状态: ⏸️ 未启用" in out
-    assert "微信通道状态: ⏸️ 未启用" in out
-    print("✅ test_both_disabled passed.")
-
-def test_qq_only_enabled():
+def test_wechat_disabled():
     code, out = run_main_check({"ENABLE_QQ": "true", "ENABLE_WECHAT": "false"})
     assert code == 0, f"Expected 0, got {code}"
-    assert "QQ 通道状态: ✅ 已启用" in out
-    assert "微信通道状态: ⏸️ 未启用" in out
-    print("✅ test_qq_only_enabled passed.")
+    assert "微信通道状态" in out
+    assert "未启用" in out
+    assert "QQ" not in out
+    print("✅ test_wechat_disabled passed.")
 
-def test_wechat_only_enabled():
-    code, out = run_main_check({"ENABLE_QQ": "false", "ENABLE_WECHAT": "true"})
-    assert code == 0, f"Expected 0, got {code}"
-    assert "QQ 通道状态: ⏸️ 未启用" in out
-    assert "微信通道状态: ✅ 已启用" in out
-    print("✅ test_wechat_only_enabled passed.")
-
-def test_both_enabled():
+def test_wechat_enabled():
     code, out = run_main_check({"ENABLE_QQ": "true", "ENABLE_WECHAT": "true"})
     assert code == 0, f"Expected 0, got {code}"
-    assert "QQ 通道状态: ✅ 已启用" in out
-    assert "微信通道状态: ✅ 已启用" in out
-    print("✅ test_both_enabled passed.")
+    assert "微信通道状态" in out
+    assert "已启用" in out
+    assert "QQ" not in out
+    print("✅ test_wechat_enabled passed.")
+
+def test_qq_config_is_not_active():
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from core import config
+
+    assert not hasattr(config, "ENABLE_QQ")
+    assert not hasattr(config, "NAPCAT_HTTP_URL")
+    print("✅ test_qq_config_is_not_active passed.")
 
 if __name__ == "__main__":
-    test_both_disabled()
-    test_qq_only_enabled()
-    test_wechat_only_enabled()
-    test_both_enabled()
-    print("🎉 ALL CHANNEL TOGGLE TESTS PASSED 100%!")
+    test_wechat_disabled()
+    test_wechat_enabled()
+    test_qq_config_is_not_active()
+    print("🎉 WECHAT-ONLY CHANNEL TESTS PASSED 100%!")

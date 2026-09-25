@@ -1,4 +1,9 @@
-"""QQ Adapter for Omni-Assistant."""
-from .qqbot_agent import run_qq_adapter
+"""Reserved namespace for a future QQ adapter.
 
-__all__ = ["run_qq_adapter"]
+QQ transport code is intentionally not part of the active application. A
+future implementation should satisfy :class:`core.channel.ChannelAdapter`.
+"""
+
+from core.channel import ChannelAdapter, MessageEvent
+
+__all__ = ["ChannelAdapter", "MessageEvent"]

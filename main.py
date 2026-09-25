@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""
-Omni-Assistant (全渠道个人智能助理) - 统一主程序入口
-支持：
-1. 模块化通道按需选配启动 (ENABLE_QQ, ENABLE_WECHAT)
-2. 统一多模型 AI 调度中心 (DeepSeek, OpenAI 兼容接口, Google Antigravity CLI)
-3. 优雅启停与进程编排
-"""
+"""Omni-Assistant unified entrypoint for WeChat, AI and Microsoft To Do."""
 
 import os
 import sys
@@ -25,6 +19,11 @@ from core.config import setup_logging
 
 logger = logging.getLogger("OmniMain")
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 def print_banner():
     banner = r"""
    ___                  _              _     _              _   
@@ -33,7 +32,7 @@ def print_banner():
  | |_| | | | | | | | | | | |_____|  /  _  \ | \__ \__ \  __/ |_ 
   \___/|_| |_| |_|_| |_|_|          \_/ \_/ |_|___/___/\___|\__|
   ==============================================================
-               全渠道个人智能助理 (Omni-Assistant)
+               微信个人智能助理 (Omni-Assistant)
   ==============================================================
     """
     print(banner)
@@ -67,7 +66,7 @@ async def run_wechat_subprocess():
     logger.info(f"微信适配器子进程已退出 (Code: {ret})")
 
 async def main():
-    parser = argparse.ArgumentParser(description="Omni-Assistant 全渠道智能管家中控")
+    parser = argparse.ArgumentParser(description="Omni-Assistant 微信智能管家中控")
     parser.add_argument("--check-only", action="store_true", help="仅执行环境与配置检查后退出")
     args = parser.parse_args()
 
@@ -75,23 +74,18 @@ async def main():
     print_banner()
 
     logger.info("正在自检通道配置与 AI 驱动环境...")
-    logger.info(f"AI 驱动引擎: [{config.AI_PROVIDER.upper()}] (Model: {config.LLM_MODEL if config.AI_PROVIDER == 'openai' else config.AGY_MODEL})")
+    logger.info(f"AI 驱动引擎: [{config.AI_PROVIDER.upper()}] (Model: {config.LLM_MODEL if config.AI_PROVIDER != 'agy' else config.AGY_MODEL})")
     if config.AI_PROVIDER == "openai":
         logger.info(f"OpenAI Base URL: {config.LLM_BASE_URL}")
 
-    qq_status = "✅ 已启用" if config.ENABLE_QQ else "⏸️ 未启用 (跳过)"
     wechat_status = "✅ 已启用" if config.ENABLE_WECHAT else "⏸️ 未启用 (跳过)"
     todo_status = "✅ 已启用" if config.ENABLE_MS_TODO else "⏸️ 未启用"
 
-    logger.info(f"QQ 通道状态: {qq_status}")
     logger.info(f"微信通道状态: {wechat_status}")
     logger.info(f"微软 To Do 同步: {todo_status}")
 
-    if not config.ENABLE_QQ and not config.ENABLE_WECHAT:
-        logger.warning("==========================================================")
-        logger.warning("⚠️  当前未启用任何消息通道 (ENABLE_QQ=false, ENABLE_WECHAT=false)")
-        logger.warning("👉 请按需在 .env 中设置 ENABLE_QQ=true 或 ENABLE_WECHAT=true")
-        logger.warning("==========================================================")
+    if not config.ENABLE_WECHAT:
+        logger.warning("微信通道未启用 (ENABLE_WECHAT=false)，仅完成配置检查。")
         return 0
 
     if args.check_only:
@@ -99,10 +93,6 @@ async def main():
         return 0
 
     tasks = []
-
-    if config.ENABLE_QQ:
-        from adapters.qq.qqbot_agent import run_qq_adapter
-        tasks.append(asyncio.create_task(run_qq_adapter()))
 
     if config.ENABLE_WECHAT:
         tasks.append(asyncio.create_task(run_wechat_subprocess()))

@@ -1,7 +1,7 @@
 {
   "name": "omni-assistant",
   "version": "1.0.0",
-  "description": "Omni-Channel Personal AI Assistant (QQ & WeChat)",
+  "description": "WeChat Personal AI Assistant with Microsoft To Do and agy",
   "main": "adapters/wechat/wechat_bot.js",
   "scripts": {
     "start": "python3 main.py",
@@ -14,11 +14,11 @@
   "keywords": [
     "ai",
     "agent",
-    "qq-bot",
     "wechat-bot",
     "deepseek",
     "antigravity",
-    "microsoft-todo"
+    "microsoft-todo",
+    "agy"
   ],
   "author": "",
   "license": "MIT"

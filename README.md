@@ -4,29 +4,27 @@
   <img src="https://img.shields.io/badge/Python-3.10%2B-blue?logo=python" alt="Python" />
   <img src="https://img.shields.io/badge/Node.js-18%2B-green?logo=node.js" alt="Node.js" />
   <img src="https://img.shields.io/badge/Default_LLM-DeepSeek-blueviolet" alt="DeepSeek" />
-  <img src="https://img.shields.io/badge/Channels-QQ%20%7C%20WeChat-orange" alt="Channels" />
+  <img src="https://img.shields.io/badge/Channel-WeChat%20iLink-orange" alt="Channel" />
   <img src="https://img.shields.io/badge/Sync-Microsoft%20To%20Do-0078D4?logo=microsoft" alt="Microsoft To Do" />
   <img src="https://img.shields.io/badge/License-MIT-purple" alt="License" />
 </p>
 
 [简体中文文档 (Chinese Documentation)](README_CN.md)
 
-> **Omni-Assistant** is an open-source, multi-channel personal AI assistant hub.  
-> It integrates **QQ (NapCat OneBot v11)** and **WeChat (Tencent Official iLink Bot Protocol)** under a unified architecture, powered by **DeepSeek / OpenAI-compatible APIs** or **Google Antigravity CLI (`agy`)**, seamlessly synchronizing schedules with **Microsoft To Do**.
+> **Omni-Assistant** is an open-source personal AI assistant hub for **WeChat (Tencent Official iLink Bot Protocol)**, powered by **DeepSeek / OpenAI-compatible APIs** or **Google Antigravity CLI (`agy`)**, with schedule synchronization through **Microsoft To Do**.
 
 ---
 
 ## 🌟 Key Features
 
 ### 1. 🎛️ Selective Channel Toggling (Zero Mandatory Coupling)
-- **Independent Channels**: QQ and WeChat operate independently via `ENABLE_QQ` and `ENABLE_WECHAT` toggles in `.env`.
-- **Zero Overhead**: Disabled channels do not initialize, make network requests, or demand prerequisite credentials.
-- **Flexible Modes**: Run QQ-only, WeChat-only, or both channels simultaneously.
+- **WeChat-only runtime**: `ENABLE_WECHAT` controls the active iLink channel; disabled mode performs no gateway connection.
+- **No QQ runtime dependency**: NapCat, OneBot, QQ ports, and QQ credentials are not loaded or deployed.
 
-### 2. 🧠 Multi-Provider AI Engine (Default: DeepSeek)
-- **Out-of-the-Box**: Pre-configured with **DeepSeek Official API (`https://api.deepseek.com/v1`)** and `deepseek-chat`.
+### 2. 🧠 Multi-Provider AI Engine (Default: Antigravity)
+- **Out-of-the-Box**: Uses **Google Antigravity CLI (`agy`)** by default, with one private project workspace per WeChat user.
 - **Standard Compatibility**: Compatible with any standard OpenAI chat completions endpoint (OpenAI, Moonshot, Qwen, SiliconFlow, Ollama, vLLM).
-- **Google Antigravity CLI**: Native support for running local Antigravity agent subprocesses (`AI_PROVIDER=agy`).
+- **OpenAI-compatible APIs**: Set `AI_PROVIDER=openai` to use DeepSeek, OpenAI, or another compatible endpoint.
 
 ### 3. 📅 Microsoft To Do Native Integration
 - **Semantic Deduplication**: Dynamically evaluates incoming group/private notices against existing tasks to identify whether an item is noise, duplicate, modification, or a new task.
@@ -38,10 +36,15 @@
   - Official protocol, avoiding web-wechat ban risks.
   - Automatic AES-128-ECB decryption for images, videos (with 50MB guardrail and cover fallback), and document files.
   - Preserves quote-reply context.
-- **QQ Adapter (Python OneBot)**:
-  - Autonomous ReAct loop with real tools (`list_todos`, `add_todo`, `update_todo`, `delete_todos`, `get_group_materials`).
-  - Strict group silence; notices are delivered privately to the administrator.
-  - Markdown sanitizer to prevent broken formatting on QQ clients.
+### 4. 🔌 Future channel extension
+- `core/channel.py` defines transport-independent message and adapter contracts.
+- The former QQ implementation is archived under `legacy/qq`; a future adapter can be added without changing the active WeChat, agy, or To Do core.
+
+### 5. 👥 Multi-user binding and isolation
+- One WeChat bot instance can serve multiple iLink users, identified by `from_user`.
+- Each user receives an isolated Microsoft To Do binding, agy conversation, media directory, and local memory; unbound users are blocked from the task-processing path.
+- On first contact, send `/bind_todo`. The service starts the user's isolated Microsoft Device Code flow and sends the Microsoft sign-in URL and device code back through WeChat; the user completes authorization independently without server-side manual configuration.
+- `/binding_status` reports the current user's status, and `/reset` only clears that user's agy conversation.
 
 ---
 
@@ -50,18 +53,16 @@
 ```mermaid
 flowchart TD
     subgraph Channels ["Channel Ingestion (Selectively Enabled)"]
-        QQ["QQ Platform (OneBot v11)"]
         WX["WeChat Platform (iLink Bot)"]
     end
 
     subgraph Adapters ["Protocol Adapters"]
-        QA["QQ Adapter (Python)"]
         WA["WeChat Adapter (Node.js)"]
     end
 
     subgraph Orchestrator ["Orchestration (main.py)"]
         CFG[".env Configuration"]
-        SW["Channel Controller (ENABLE_QQ / ENABLE_WECHAT)"]
+        SW["WeChat Controller (ENABLE_WECHAT)"]
     end
 
     subgraph Core_AI ["Universal AI Engine"]
@@ -75,12 +76,9 @@ flowchart TD
         MEM["Local Semantic Memory (synced_todos.json)"]
     end
 
-    QQ --> QA
     WX --> WA
     CFG --> SW
-    SW --> QA
     SW --> WA
-    QA --> Core_AI
     WA --> Core_AI
     Core_AI --> DS
     Core_AI --> OAI
@@ -113,12 +111,11 @@ cp .env.example .env
 ```
 Edit `.env` to enable the channels and models of your choice:
 ```bash
-# Enable channels
-ENABLE_QQ=true
+# Enable WeChat
 ENABLE_WECHAT=true
 
-# AI Provider (DeepSeek is default)
-AI_PROVIDER=openai
+# AI Provider (Antigravity is default)
+AI_PROVIDER=agy
 LLM_BASE_URL=https://api.deepseek.com/v1
 LLM_API_KEY=sk-your-deepseek-api-key
 LLM_MODEL=deepseek-chat
@@ -138,7 +135,7 @@ python3 main.py
 ## 🛡️ Security & Desensitization
 
 This project strictly adheres to a zero-leakage security boundary:
-- No personal QQ numbers, WeChat IDs, group IDs, or personal names exist in the repository.
+- No personal account identifiers or credentials exist in the default configuration; QQ is reserved only as an inactive future adapter namespace.
 - Runtime session tokens, local To Do caches, media downloads, and logs are automatically ignored by `.gitignore`.
 - Built-in audit tests:
   ```bash
