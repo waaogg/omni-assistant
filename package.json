@@ -6,9 +6,11 @@
   "scripts": {
     "start": "python3 main.py",
     "start:wechat": "node adapters/wechat/wechat_bot.js",
+    "login": "node adapters/wechat/wechat_bot.js --login",
     "test": "pytest tests"
   },
   "dependencies": {
+    "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0"
   },
   "keywords": [

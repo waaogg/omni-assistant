@@ -17,6 +17,7 @@ SENSITIVE_TEST_FILES = [
     "data/synced_todos.json",
     "data/group_history.json",
     "data/wechat/auth.json",
+    "data/wechat/auth_pool.json",
     "data/wechat/sync_buf.txt",
     "data/wechat/conversations.json",
     "media/test_image.png",

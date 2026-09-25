@@ -17,3 +17,15 @@
 - **标签**：`#security` `#sandbox` `#turn-step` `#2026-09-25`
 
 
+
+### ⚠️ [POSTMORTEM] 2026-09-25 19:48:13
+- **内容**：【WeChat Bot 发图卡死无输出根因复盘与修复】1. 凭据链污染与静默重试风暴：Windows 凭据管理器中 gemini:antigravity 残留旧账号 Token 导致 429 额度耗尽，agy 内部静默指数退避重试 6 分钟造成无输出假死。已通过 CredWrite 更新为新账号。2. 微信媒体解密 Base64 Hex 嵌套缺陷：media.aes_key 为 32 位 Hex 串的 Base64 编码，原逻辑长度校验失败静默吞错，导致密文写入 png 磁盘。已重构 parseAesKey 完美解密 jpg。3. CLI 错误泄露与会话自愈：修复 ai_provider.js 在 ERROR 时泄露 raw NDJSON，新增检测 429/400/超时自动重置 conversationId 并在新上下文中无缝重试自愈。
+- **标签**：`#postmortem` `#2026-09-25`
+
+### ⚠️ [POSTMORTEM] 2026-09-25 20:37:11
+- **内容**：【agy.exe --hub 幽灵后台覆写凭据排查与根除】发现 13:56 遗留的孤儿进程 PID 41808 (agy.exe --hub) 每隔 1 小时触发内部 OAuth Token 刷新，将 Windows 凭据管理器中的 gemini:antigravity 覆写回旧账号 waaoggawa@gmail.com，导致后续微信调用再次陷入 429。已彻底终止 PID 41808，重置凭据为新账号，并在 ai_provider.js 中注入 ensure_auth.py 自动防篡改守卫（每次调用前毫秒级自检与校准凭据），并设置 --print-timeout 120s 防止死等。
+- **标签**：`#postmortem` `#2026-09-25`
+
+### 🏛️ [DECISION] 2026-09-25 21:00:47
+- **内容**：微信多账号并发轮询与零重启热插拔登录体系交付：1. 单账号凭据覆盖与消息断流根因：腾讯 iLink Bot 协议为每对扫码关系分配独立 bot_token 与 sync_buf，消息按 token 分片暂存。原架构仅存单份 auth.json 且单线程长轮询，导致多账号扫码时后登覆盖先登，未轮询账号消息永不回传。2. 解决方案落地：构建 AuthPool (auth_pool.json) 持久化多账号池；重构 BotManager 并发多线程长轮询状态机；常驻 QRLoginDaemon 监听扫码事件，扫码确认瞬间在内存中热挂载独立 Poller 并触发欢迎消息，实现生产环境 0 进程重启连续运行。3. 运营门户支撑：启动轻量 HTTP 门户 (端口 3000) 配合桌面一键直达快捷方式，提供带状态机的实时二维码渲染、在线账号列表与毫秒级手动换码 API。
+- **标签**：`#decision` `#2026-09-25`

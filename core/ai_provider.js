@@ -4,7 +4,7 @@
  * 1. OpenAI-compatible API (Default: DeepSeek, OpenAI, etc.)
  * 2. Google Antigravity CLI (agy) subprocess
  */
-const { spawn } = require('node:child_process');
+const { spawn, execFileSync } = require('node:child_process');
 const path = require('node:path');
 
 
@@ -127,12 +127,17 @@ function formatAgyLog(category, message, details = null) {
  * Call Antigravity CLI (agy)
  */
 async function callAntigravityCLI(promptText, conversationId, timeoutMs = 180000, options = {}) {
+  try {
+    execFileSync('python', [path.join(__dirname, 'ensure_auth.py')], { stdio: 'ignore' });
+  } catch {}
+
   return new Promise((resolve, reject) => {
     const agent = resolveAgentCommand();
     const args = [
       '-p', promptText,
       '--model', AGY_MODEL,
       '--output-format', 'stream-json',
+      '--print-timeout', '120s',
     ];
     args.push('--dangerously-skip-permissions');
     if (conversationId) {
@@ -299,25 +304,44 @@ async function callAntigravityCLI(promptText, conversationId, timeoutMs = 180000
       const totalElapsed = ((Date.now() - startTime) / 1000).toFixed(2);
       formatAgyLog('CLOSE', `🛑 Antigravity 进程生命周期结束 (PID: ${child.pid}, 退出码: ${code}, 总历时: ${totalElapsed}s)`);
 
+      if (finalResult && finalResult.status === 'ERROR') {
+        return reject(new Error(finalResult.error || 'Antigravity CLI 执行失败'));
+      }
+
       if (finalResult && finalResult.response) {
         return resolve({
           response: finalResult.response.trim(),
           conversationId: finalResult.conversation_id || lastConversationId || conversationId,
         });
       }
-      if (code !== 0 && !stdout.trim()) {
-        return reject(new Error(stderr || `agy exited with code ${code}`));
-      }
-      try {
-        const jsonMatch = stdout.trim().match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          const parsed = JSON.parse(jsonMatch[0]);
-          return resolve({
-            response: (parsed.response || stdout).trim(),
-            conversationId: parsed.conversation_id || lastConversationId || conversationId,
-          });
+
+      // Check if last line of stdout had a result event
+      if (stdout) {
+        const lines = stdout.split('\n');
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const l = lines[i].trim();
+          if (!l) continue;
+          try {
+            const p = JSON.parse(l);
+            if (p.event === 'result' && p.result) {
+              if (p.result.status === 'ERROR') {
+                return reject(new Error(p.result.error || 'Antigravity CLI 执行失败'));
+              }
+              if (p.result.response) {
+                return resolve({
+                  response: p.result.response.trim(),
+                  conversationId: p.result.conversation_id || lastConversationId || conversationId,
+                });
+              }
+            }
+          } catch {}
         }
-      } catch {}
+      }
+
+      if (code !== 0) {
+        return reject(new Error(stderr || finalResult?.error || `agy exited with code ${code}`));
+      }
+
       resolve({
         response: stdout.trim() || '（已执行完成）',
         conversationId: lastConversationId || conversationId,
@@ -348,7 +372,18 @@ async function executeAI(promptText, conversationId = null, systemPrompt = null,
     try {
       return await callAntigravityCLI(promptText, conversationId, 180000, options);
     } catch (err) {
-      if (conversationId && err.message.includes('执行超时')) {
+      const errMsg = String(err.message || '');
+      const shouldRetryClean = Boolean(conversationId) && (
+        errMsg.includes('执行超时') ||
+        errMsg.includes('RESOURCE_EXHAUSTED') ||
+        errMsg.includes('quota reached') ||
+        errMsg.includes('not found') ||
+        errMsg.includes('exited with code') ||
+        errMsg.includes('INVALID_ARGUMENT') ||
+        errMsg.includes('failed')
+      );
+      if (shouldRetryClean) {
+        formatAgyLog('RETRY', `🔄 正在重置失效会话并以全新上下文重试... (原会话: ${conversationId})`);
         return await callAntigravityCLI(promptText, null, 180000, options);
       }
       throw err;
