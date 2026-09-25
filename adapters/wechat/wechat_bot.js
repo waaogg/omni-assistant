@@ -1075,8 +1075,9 @@ async function runDaemon() {
         try {
           const timeHeader = `[当前北京时间: ${getNowGmt8Str()}]\n`;
           const finalPrompt = timeHeader + promptForAI;
-          log(`⚙️ 正在调度 AI (${AI_PROVIDER}) 推理执行: 用户=${fromUser}, 思考链模式=${user.thinkMode ? '开启' : '关闭'}, 会话ID=${convId || '(首轮)'}`);
           const convId = loadConversation(user.paths.conversationFile) || user.conversationId;
+          log(`⚙️ 正在调度 AI (${AI_PROVIDER}) 推理执行: 用户=${fromUser}, 思考链模式=${user.thinkMode ? '开启' : '关闭'}, 会话ID=${convId || '(首轮)'}`);
+
           let onProgress = null;
           if (user.thinkMode) {
             onProgress = createProgressNotifier(async (msg) => {
