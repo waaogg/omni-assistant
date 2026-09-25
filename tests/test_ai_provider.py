@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
-"""
-Test AI Provider multi-backend abstraction (OpenAI compatible / DeepSeek / agy)
-"""
+"""Test the OpenAI-compatible AI provider contract."""
 
 import sys
 import os
-import subprocess
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -57,8 +54,8 @@ def test_agy_call_structure():
             assert "-p" in cmd_args
             assert "--model" in cmd_args
     print("✅ test_agy_call_structure passed.")
-
 def test_node_ai_provider():
+    import subprocess
     res = subprocess.run(
         ["node", "-e", """
         const ai = require('./core/ai_provider.js');
@@ -75,9 +72,61 @@ def test_node_ai_provider():
     assert "Node AI Module OK" in res.stdout
     print("✅ test_node_ai_provider passed.")
 
+
+def test_cli_provider_parses_json_response():
+    with patch.object(config, "AI_PROVIDER", "codex"), \
+         patch("core.ai_provider.ensure_cli", return_value="codex"), \
+         patch("core.ai_provider.subprocess.run") as run:
+        run.return_value = MagicMock(
+            returncode=0,
+            stdout='{"type":"message","text":"CLI response"}\n',
+            stderr="",
+        )
+        assert ai_provider.call_ai("hello") == "CLI response"
+        assert run.call_args.args[0][0] == "codex"
+
+
+def test_cli_provider_parses_nested_jsonl_event():
+    with patch.object(config, "AI_PROVIDER", "codex"), \
+         patch("core.ai_provider.ensure_cli", return_value="codex"), \
+         patch("core.ai_provider.subprocess.run") as run:
+        run.return_value = MagicMock(
+            returncode=0,
+            stdout='{"type":"item.completed","item":{"type":"agent_message","content":"nested response"}}\n',
+            stderr="",
+        )
+        assert ai_provider.call_ai("hello") == "nested response"
+
+
+def test_cli_agent_executes_tool_then_final():
+    with patch.object(config, "AI_PROVIDER", "codex"), \
+         patch("core.ai_provider.ensure_cli", return_value="codex"), \
+         patch("core.ai_provider.subprocess.run") as run:
+        run.side_effect = [
+            MagicMock(returncode=0, stdout='{"type":"tool_call","name":"echo","arguments":{"value":"x"}}', stderr=""),
+            MagicMock(returncode=0, stdout='{"type":"final","content":"done"}', stderr=""),
+        ]
+        result = ai_provider.call_agent(
+            [{"role": "user", "content": "use tool"}],
+            [{"name": "echo"}],
+            lambda name, args: args["value"],
+        )
+        assert result == "done"
+
+
+def test_cli_provider_requires_install_opt_in():
+    with patch.object(config, "AUTO_INSTALL_CLI", False), \
+         patch("core.cli_manager.shutil.which", return_value=None):
+        from core.cli_manager import ensure_cli
+        try:
+            ensure_cli("codex")
+        except FileNotFoundError as exc:
+            assert "AUTO_INSTALL_CLI=true" in str(exc)
+        else:
+            raise AssertionError("missing CLI should fail when auto-install is disabled")
+
 if __name__ == "__main__":
     test_default_config()
     test_openai_compatible_call_structure()
-    test_agy_call_structure()
     test_node_ai_provider()
     print("🎉 ALL AI PROVIDER TESTS PASSED 100%!")

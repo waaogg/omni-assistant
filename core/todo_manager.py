@@ -9,6 +9,7 @@ from typing import Dict, Any, List, Optional
 from core import config
 from core import ai_provider
 from core.todo_helper import add_todo_task, update_todo_task, delete_todo_task, list_active_todo_tasks, parse_iso_times
+from core.storage import load_json, save_json
 
 logger = logging.getLogger("TodoManager")
 
@@ -33,22 +34,13 @@ def get_task_signature(what: str, when: str) -> str:
 
 def load_memory() -> dict:
     mem_file = config.MEMORY_FILE
-    if mem_file.exists():
-        try:
-            with open(mem_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    return data
-        except Exception as e:
-            logger.error(f"加载待办记忆库失败: {e}")
-    return {}
+    data = load_json(mem_file, {})
+    return data if isinstance(data, dict) else {}
 
 def save_memory(mem: dict):
     mem_file = config.MEMORY_FILE
     try:
-        mem_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(mem_file, "w", encoding="utf-8") as f:
-            json.dump(mem, f, ensure_ascii=False, indent=2)
+        save_json(mem_file, mem)
     except Exception as e:
         logger.error(f"保存永久记忆库失败: {e}")
 

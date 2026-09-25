@@ -9,8 +9,8 @@
   <img src="https://img.shields.io/badge/License-MIT-purple" alt="License" />
 </p>
 
-> **Omni-Assistant** 是一款专为个人打造的微信智能中控管家。
-> 通过 **腾讯官方 iLink 机器人协议** 接入微信，支持 **DeepSeek 等 OpenAI 兼容模型** 与 **Google Antigravity CLI (`agy`)**，并联动 **Microsoft To Do** 实现日程提取、语义防重、起止时间完整性管理与原生系统强提醒。
+> **Omni-Assistant** 是一款专为个人打造的开源全渠道智能中控管家。
+> 深度接入 **微信（腾讯官方 iLink 机器人协议，支持多账号无缝热加入与 Web 扫码控制台）** 与 **QQ（NapCat OneBot v11）**，底层由 **Google Antigravity CLI (`agy`)**、本地编码 CLI（Codex、OpenCode、Claude）或 **OpenAI 兼容端点**（DeepSeek、OpenAI、Ollama 等）驱动，并联动 **Microsoft To Do** 实现日程提取、语义防重、起止时间完整性管理与原生系统强提醒。
 
 ---
 
@@ -20,10 +20,11 @@
 - 微信通道通过 `.env` 中的 `ENABLE_WECHAT` 控制；关闭时不会发起 iLink 网络连接。
 - QQ/NapCat/OneBot 不属于当前运行面，不再创建账号、端口或容器依赖。
 
-### 2. 🧠 多 AI 后端中控调度（默认 Antigravity）
-- **开箱即用**：默认使用 **Google Antigravity CLI (`agy`)**，每个微信用户使用自己的项目工作区。
-- **标准兼容**：全面兼容任何符合 OpenAI API 规范的端点（如 OpenAI、Moonshot、通义千问、SiliconFlow、本地 Ollama/vLLM 等）。
-- **OpenAI 兼容接口支持**：设置 `AI_PROVIDER=openai` 后可切换到 DeepSeek、OpenAI 等标准接口。
+### 2. 🧠 可插拔多 AI 中控调度（默认 Antigravity）
+- **开箱即用**：默认接入 **Google Antigravity CLI (`agy`)**，微信端各用户拥有独立安全沙箱，支持子进程全流程流式监控与会话自动愈合。
+- **本地代码 CLI 引擎**：原生支持 `AI_PROVIDER=agy|codex|opencode|claude`。设置 `AUTO_INSTALL_CLI=true` 可自动安装已核实的 npm CLI；`agy` 因发行包依环境而异，可显式指定 `AGY_INSTALL_COMMAND`。
+- **标准兼容**：全面兼容任何符合 OpenAI API 规范的端点（如 DeepSeek、OpenAI、Moonshot、通义千问、SiliconFlow、本地 Ollama/vLLM 等）。
+- **工具兼容**：QQ 保留原生 OpenAI 工具调用；本地 CLI 使用统一 JSON 工具协议（`tool_call` / `final`），执行同一套本地工具。
 
 ### 3. 📅 微软待办原生嵌入与提前 15 分钟闹钟 (Microsoft To Do)
 - **语义级防重与动态修正**：捕捉群通知时携带现有未完成待办，由大模型裁决是闲聊 (`ignore`)、重复 (`duplicate`)、修正现有事项 (`update`) 还是全新待办 (`new`)。
@@ -68,7 +69,6 @@ flowchart TD
     subgraph Brain ["统一大脑调度层 (Core AI Provider)"]
         DS["DeepSeek / OpenAI 兼容接口"]
         OAI["标准 OpenAI 兼容接口"]
-        AGY["Google Antigravity CLI (agy)"]
     end
 
     subgraph Integration ["生态闭环联动"]
@@ -82,7 +82,6 @@ flowchart TD
     WA --> Brain
     Brain --> DS
     Brain --> OAI
-    Brain --> AGY
     Brain --> Integration
 ```
 
@@ -100,6 +99,8 @@ cd omni-assistant
 - **Python 环境** (Python 3.10+):
   ```bash
   pip install -r requirements.txt
+  # 运行测试时再安装
+  pip install -r requirements-dev.txt
   ```
 - **Node.js 环境** (Node.js 18+，若启用微信或 To Do 模块):
   ```bash
@@ -117,8 +118,12 @@ cp .env.example .env
 # 1. 开启微信通道
 ENABLE_WECHAT=true
 
-# 2. 配置 AI 大模型（默认使用本地 Antigravity）
+# 2. 配置 AI 大模型或本地 CLI（默认使用 Google Antigravity）
 AI_PROVIDER=agy
+AUTO_INSTALL_CLI=false
+
+# 若切换为标准 OpenAI / DeepSeek 接口：
+# AI_PROVIDER=openai
 LLM_BASE_URL=https://api.deepseek.com/v1
 LLM_API_KEY=sk-your-deepseek-api-key
 LLM_MODEL=deepseek-chat
@@ -131,6 +136,10 @@ LLM_MODEL=deepseek-chat
 ```bash
 python3 main.py --check-only
 ```
+
+配置自检发现非法通道、URL、数字或 AI 驱动配置时会以退出码 `2` 失败，便于
+容器和 systemd 快速阻断错误部署。待办、群历史和微信会话状态均采用原子替换
+写入，进程中断时不会留下半截 JSON 文件。
 
 ### 5. 启动服务
 ```bash
@@ -147,9 +156,24 @@ python3 main.py
    ```bash
    python3 tests/test_desensitization.py
    python3 tests/test_git_isolation.py
+   python3 -m pytest -q
    ```
 
 ---
 
 ## 📄 开源许可证
 本项目基于 [MIT License](LICENSE) 协议开源。
+## 图形化设置与运行面板
+
+启动本地 Dashboard：
+
+```bash
+python dashboard.py
+```
+
+然后访问 `http://127.0.0.1:8765`。面板支持初始配置常用的 AI/QQ/微信/To Do
+选项、启动/重启/停止助手进程，并查看最近的监督进程输出。配置会原子写入
+`.env`，保存后需要重启服务才会生效；API Key 和 Token 只显示掩码。
+
+面板默认只监听本机。如需通过反向代理访问，请在环境中设置
+`DASHBOARD_HOST`、`DASHBOARD_PORT`，并配置 `DASHBOARD_TOKEN` 后再暴露到网络。

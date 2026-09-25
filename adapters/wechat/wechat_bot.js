@@ -2,7 +2,7 @@
 /**
  * WeChat Adapter for Omni-Assistant
  * Directly connects to Tencent's official iLink Bot protocol (ilinkai.weixin.qq.com)
- * Uses core/ai_provider.js for multi-model AI reasoning (DeepSeek, OpenAI, agy CLI)
+ * Uses core/ai_provider.js for OpenAI-compatible AI reasoning
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -142,9 +142,12 @@ const LEGACY_CONV_FILE = path.join(DATA_DIR, 'conversations.json');
 const userRegistry = new UserRegistry(DATA_DIR, LEGACY_CONV_FILE);
 const bindingProcesses = new Map();
 
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+function atomicWriteFile(filePath, content) {
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tempPath, content, 'utf8');
+  fs.renameSync(tempPath, filePath);
 }
+
 function loadAuth() {
   if (fs.existsSync(AUTH_FILE)) {
     try {
@@ -157,7 +160,22 @@ function loadAuth() {
 }
 
 function saveAuth(data) {
-  fs.writeFileSync(AUTH_FILE, JSON.stringify(data, null, 2), 'utf8');
+  atomicWriteFile(AUTH_FILE, JSON.stringify(data, null, 2));
+}
+
+function loadConversations() {
+  if (fs.existsSync(LEGACY_CONV_FILE)) {
+    try {
+      return JSON.parse(fs.readFileSync(LEGACY_CONV_FILE, 'utf8'));
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function saveConversations(data) {
+  atomicWriteFile(LEGACY_CONV_FILE, JSON.stringify(data, null, 2));
 }
 
 function loadSyncBuf() {
@@ -172,7 +190,7 @@ function loadSyncBuf() {
 }
 
 function saveSyncBuf(buf) {
-  fs.writeFileSync(SYNC_FILE, buf || '', 'utf8');
+  atomicWriteFile(SYNC_FILE, buf || '');
 }
 
 class AuthPool {
@@ -703,7 +721,7 @@ async function sendWechatMessage(auth, toUserId, contextToken, text) {
         },
       ],
     },
-    base_info: { channel_version: '2.4.8', bot_agent: 'AntigravityClawBot/1.0' },
+    base_info: { channel_version: '2.4.8', bot_agent: 'OmniAssistant/1.0' },
   };
 
   const start = Date.now();
@@ -730,7 +748,7 @@ async function sendTypingStatus(auth, toUserId, typingTicket) {
       ilink_user_id: toUserId,
       typing_ticket: typingTicket,
       status: 1,
-      base_info: { channel_version: '2.4.8', bot_agent: 'AntigravityClawBot/1.0' },
+      base_info: { channel_version: '2.4.8', bot_agent: 'OmniAssistant/1.0' },
     }, auth.botToken, 5000);
   } catch {}
 }
@@ -1191,7 +1209,7 @@ async function runPollerForAccount(pollerState, authPool, registry) {
 
   try {
     await apiPost(account.baseUrl, 'ilink/bot/msg/notifystart', {
-      base_info: { channel_version: '2.4.8', bot_agent: 'AntigravityClawBot/1.0' }
+      base_info: { channel_version: '2.4.8', bot_agent: 'OmniAssistant/1.0' }
     }, account.botToken, 5000);
     log(`📡 [POLLER:${shortId}] 已发送 notifystart 就绪心跳`);
   } catch (e) {
@@ -1206,7 +1224,7 @@ async function runPollerForAccount(pollerState, authPool, registry) {
         get_updates_buf: syncBuf,
         base_info: {
           channel_version: '2.4.8',
-          bot_agent: 'AntigravityClawBot/1.0',
+          bot_agent: 'OmniAssistant/1.0',
         },
       }, account.botToken, 40000);
 
