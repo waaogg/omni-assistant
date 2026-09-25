@@ -81,10 +81,11 @@ async function callOpenAICompatible(messages, timeoutMs = 60000) {
 async function callAntigravityCLI(promptText, conversationId, timeoutMs = 180000, options = {}) {
   return new Promise((resolve, reject) => {
     const agent = resolveAgentCommand();
+    const useStreamJson = Boolean(options.onProgress && typeof options.onProgress === 'function');
     const args = [
       '-p', promptText,
       '--model', AGY_MODEL,
-      '--output-format', 'json',
+      '--output-format', useStreamJson ? 'stream-json' : 'json',
     ];
     args.push('--dangerously-skip-permissions');
     if (conversationId) {
@@ -99,17 +100,48 @@ async function callAntigravityCLI(promptText, conversationId, timeoutMs = 180000
 
     let stdout = '';
     let stderr = '';
+    let streamBuffer = '';
+    let finalResult = null;
+    let lastConversationId = conversationId;
 
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
       reject(new Error(`Antigravity CLI 执行超时 (${Math.round(timeoutMs / 1000)}秒)，请稍后重试`));
     }, timeoutMs);
 
-    child.stdout.on('data', (d) => { stdout += d.toString(); });
+    child.stdout.on('data', (d) => {
+      const chunk = d.toString();
+      stdout += chunk;
+      if (useStreamJson) {
+        streamBuffer += chunk;
+        const lines = streamBuffer.split('\n');
+        streamBuffer = lines.pop();
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            const item = JSON.parse(trimmed);
+            if (item.event === 'init' && item.conversation_id) {
+              lastConversationId = item.conversation_id;
+            } else if (item.event === 'step_update' && item.step_update) {
+              options.onProgress(item.step_update);
+            } else if (item.event === 'result' && item.result) {
+              finalResult = item.result;
+            }
+          } catch {}
+        }
+      }
+    });
     child.stderr.on('data', (d) => { stderr += d.toString(); });
 
     child.on('close', (code) => {
       clearTimeout(timer);
+      if (useStreamJson && finalResult && finalResult.response) {
+        return resolve({
+          response: finalResult.response.trim(),
+          conversationId: finalResult.conversation_id || lastConversationId || conversationId,
+        });
+      }
       if (code !== 0 && !stdout.trim()) {
         return reject(new Error(stderr || `agy exited with code ${code}`));
       }
@@ -119,13 +151,13 @@ async function callAntigravityCLI(promptText, conversationId, timeoutMs = 180000
           const parsed = JSON.parse(jsonMatch[0]);
           return resolve({
             response: (parsed.response || stdout).trim(),
-            conversationId: parsed.conversation_id || conversationId,
+            conversationId: parsed.conversation_id || lastConversationId || conversationId,
           });
         }
       } catch {}
       resolve({
         response: stdout.trim() || '（已执行完成）',
-        conversationId,
+        conversationId: lastConversationId || conversationId,
       });
     });
 

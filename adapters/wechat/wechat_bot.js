@@ -639,6 +639,73 @@ function getNowGmt8Str() {
   return `${y}年${m}月${day}日 ${w} ${h}:${min}:${s} (GMT+8)`;
 }
 
+function createProgressNotifier(sendFn) {
+  const sentPhases = new Set();
+  let lastSentTime = 0;
+  const MIN_INTERVAL_MS = 2500;
+
+  return async (stepUpdate) => {
+    if (!stepUpdate || stepUpdate.state !== 'ACTIVE') return;
+
+    let message = null;
+    let phaseKey = null;
+
+    if (stepUpdate.step_type === 'tool') {
+      const toolName = stepUpdate.tool_name;
+      const toolInfo = stepUpdate.tool_info || {};
+      const params = toolInfo.parameters || {};
+
+      if (toolName === 'call_mcp_tool') {
+        const mcpTool = params.ToolName || '';
+        if (mcpTool === 'list_task_lists' || mcpTool === 'list_tasks') {
+          phaseKey = 'query_tasks';
+          message = '🔍 [思考中 1/3] 正在查询 Microsoft To Do 待办清单与比对查重...';
+        } else if (mcpTool === 'create_task') {
+          phaseKey = 'create_task';
+          message = '📝 [思考中 2/3] 正在创建 Microsoft To Do 待办事项并设置闹钟...';
+        } else if (mcpTool === 'update_task') {
+          phaseKey = 'update_task';
+          message = '⚡ [思考中 2/3] 发现重合待办，正在依据最新通知覆写更正...';
+        } else if (mcpTool === 'complete_task') {
+          phaseKey = 'complete_task';
+          message = '✅ [思考中 2/3] 正在将待办标记为已完成...';
+        } else if (mcpTool === 'delete_task') {
+          phaseKey = 'delete_task';
+          message = '🗑️ [思考中 2/3] 正在删除指定待办...';
+        }
+      } else if (toolName === 'view_file') {
+        const filePath = String(params.AbsolutePath || '');
+        if (filePath.includes('synced_todos.json')) {
+          phaseKey = 'read_memory';
+          message = '📖 [思考中 1/3] 正在检索本地持久化记忆库...';
+        } else if (filePath.includes('media')) {
+          phaseKey = 'read_media';
+          message = '🖼️ [思考中 1/3] 正在解构分析附件/图片内容...';
+        }
+      } else if (toolName === 'write_to_file') {
+        const filePath = String(params.TargetFile || '');
+        if (filePath.includes('synced_todos.json')) {
+          phaseKey = 'write_memory';
+          message = '💾 [思考中 3/3] 正在更新本地同步记忆库...';
+        }
+      }
+    }
+
+    if (phaseKey && !sentPhases.has(phaseKey)) {
+      const now = Date.now();
+      if (now - lastSentTime >= MIN_INTERVAL_MS) {
+        sentPhases.add(phaseKey);
+        lastSentTime = now;
+        try {
+          await sendFn(message);
+        } catch (e) {
+          // ignore notification sending error to not disrupt main task
+        }
+      }
+    }
+  };
+}
+
 async function runDaemon() {
   let auth = loadAuth();
   if (!auth || !auth.botToken) {
@@ -776,8 +843,20 @@ async function runDaemon() {
             const bindingLine = user.status === 'active'
               ? '✅ Microsoft To Do 已完成绑定'
               : '⚠️ Microsoft To Do 尚未绑定：请发送 /bind_todo 开始授权';
-            const helpMsg = `🤖 Omni-Assistant 微信智能助手\n\n- 直接发送对话、任务需求、图片或文档开始交互\n- /bind_todo : 绑定你自己的 Microsoft To Do 账户\n- /binding_status : 查看个人绑定状态\n- /status : 查看当前系统与 AI 驱动状态\n- /reset  : 清除你的 agy 会话记忆\n- /help   : 查看本帮助说明\n\n${bindingLine}`;
+            const helpMsg = `🤖 Omni-Assistant 微信智能助手\n\n- 直接发送对话、任务需求、图片或文档开始交互\n- /bind_todo : 绑定你自己的 Microsoft To Do 账户\n- /binding_status : 查看个人绑定状态\n- /think on / off : 开启或关闭思考链阶段进度通知 (默认关闭)\n- /status : 查看当前系统与 AI 驱动状态\n- /reset  : 清除你的 agy 会话记忆\n- /help   : 查看本帮助说明\n\n${bindingLine}`;
             await sendWechatMessage(auth, fromUser, latestContextToken, helpMsg);
+            continue;
+          }
+
+          if (rawText === '/think on' || rawText === '#think on') {
+            await userRegistry.update(fromUser, { thinkMode: true });
+            await sendWechatMessage(auth, fromUser, latestContextToken, '💡 思考链阶段通知已开启！执行任务时，机器人将在关键节点（查询待办、同步微软、更新记忆）发送实时进度。发送 /think off 可随时关闭。');
+            continue;
+          }
+
+          if (rawText === '/think off' || rawText === '#think off') {
+            await userRegistry.update(fromUser, { thinkMode: false });
+            await sendWechatMessage(auth, fromUser, latestContextToken, '🔕 思考链阶段通知已关闭，将仅在任务全部完成后发送最终回复。发送 /think on 可重新开启。');
             continue;
           }
 
@@ -804,7 +883,8 @@ async function runDaemon() {
 
           if (rawText === '/status' || rawText === '#status') {
             const activeModel = AI_PROVIDER === 'agy' ? AGY_MODEL : LLM_MODEL;
-            const statusMsg = `📊 你的智能体状态报告:\n- AI 引擎: ${AI_PROVIDER} (${activeModel})\n- Microsoft To Do: ${user.status === 'active' ? '已绑定' : '未绑定'}\n- 宿主负载: ${os.loadavg()[0].toFixed(2)}\n- 运行时间: ${(os.uptime() / 3600).toFixed(1)} 小时\n- 当前会话: ${conversationId || '无 (首轮)'}`;
+            const thinkStatus = user.thinkMode ? '已开启 (ON)' : '已关闭 (OFF)';
+            const statusMsg = `📊 你的智能体状态报告:\n- AI 引擎: ${AI_PROVIDER} (${activeModel})\n- Microsoft To Do: ${user.status === 'active' ? '已绑定' : '未绑定'}\n- 思考链阶段通知: ${thinkStatus}\n- 宿主负载: ${os.loadavg()[0].toFixed(2)}\n- 运行时间: ${(os.uptime() / 3600).toFixed(1)} 小时\n- 当前会话: ${conversationId || '无 (首轮)'}`;
             await sendWechatMessage(auth, fromUser, latestContextToken, statusMsg);
             continue;
           }
@@ -905,8 +985,21 @@ async function runDaemon() {
           const finalPrompt = timeHeader + promptForAI;
           log(`⚙️ 正在调用 AI (${AI_PROVIDER}) 推理执行...`);
           const convId = loadConversation(user.paths.conversationFile) || user.conversationId;
+          let onProgress = null;
+          if (user.thinkMode) {
+            onProgress = createProgressNotifier(async (msg) => {
+              log(`[阶段进度通知 -> ${fromUser}]: ${msg}`);
+              try {
+                await sendWechatMessage(auth, fromUser, latestContextToken, msg);
+              } catch (notifyErr) {
+                log(`⚠️ 阶段通知发送失败: ${notifyErr.message}`);
+              }
+            });
+          }
+
           const result = await executeAI(finalPrompt, convId, null, {
             cwd: user.paths.workspace,
+            onProgress,
             env: {
               OMNI_USER_ID: fromUser,
               OMNI_USER_DATA_DIR: user.paths.root,
